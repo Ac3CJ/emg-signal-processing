@@ -181,8 +181,8 @@ def applyStandardSEMGProcessing(signal, fs=1000.0):
     # 1. Remove 50Hz hum
     clean_signal = notchFilter(signal, fs=fs, notchFreq=50.0)
     
-    # 2. Bandpass between 20Hz and 450Hz
-    clean_signal = bandpassFilter(clean_signal, fs=fs, lowCut=20.0, highCut=450.0)
+    # 2. Bandpass between 30Hz (ECG Data) and 450Hz
+    clean_signal = bandpassFilter(clean_signal, fs=fs, lowCut=30.0, highCut=450.0)
     
     # 3. Full-wave rectify
     processed_signal = rectifySignal(clean_signal)

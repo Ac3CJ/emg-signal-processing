@@ -3,7 +3,9 @@ import scipy.signal
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
 import numpy as np
+
 import SignalProcessing
+import SignalAnalysis
 
 # Sampling rate from Rivela et al. (1.0 kHz) [cite: 82]
 FS = 1000.0 
@@ -104,6 +106,8 @@ def get_mat_headers(file_path):
 
 # Usage
 if __name__ == "__main__":
+    SignalAnalysis.generate_all_signal_images()
+
     file_location = './secondary_data/Soggetto1/'
     file_name = file_location + 'Movimento1.mat' 
     contents, keys = get_mat_headers(file_name)

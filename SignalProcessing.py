@@ -14,6 +14,59 @@ SAMPLE_FREQUENCY = 25000
 # ================================ CLASSIC PROCESSING ================================
 # ====================================================================================
 
+# ====================================================================================
+# ============================== SEMG STANDARD PIPELINE ==============================
+# ====================================================================================
+
+def notchFilter(signal, fs=1000.0, notchFreq=50.0, qualityFactor=30.0):
+    """
+    Applies a Notch filter to remove powerline interference.
+    
+    Args:
+        signal (np.ndarray): Raw input signal.
+        fs (float): Sampling frequency in Hz.
+        notchFreq (float): Frequency to remove (50.0 Hz for UK/EU, 60.0 Hz for US).
+        qualityFactor (float): Quality factor of the notch filter.
+        
+    Returns:
+        np.ndarray: Signal with powerline noise removed.
+    """
+    b, a = scipy.signal.iirnotch(notchFreq, qualityFactor, fs)
+    # Using filtfilt for zero-phase distortion
+    return scipy.signal.filtfilt(b, a, signal)
+
+def bandpassFilter(signal, fs=1000.0, lowCut=20.0, highCut=450.0, order=4):
+    """
+    Applies a Butterworth bandpass filter to remove movement artifacts and high-freq noise.
+    
+    Args:
+        signal (np.ndarray): Input signal.
+        fs (float): Sampling frequency in Hz.
+        lowCut (float): Lower cutoff frequency.
+        highCut (float): Upper cutoff frequency.
+        order (int): Order of the Butterworth filter.
+        
+    Returns:
+        np.ndarray: Bandpass filtered signal.
+    """
+    nyquist = 0.5 * fs
+    low = lowCut / nyquist
+    high = highCut / nyquist
+    b, a = scipy.signal.butter(order, [low, high], btype='band')
+    return scipy.signal.filtfilt(b, a, signal)
+
+def rectifySignal(signal):
+    """
+    Applies full-wave rectification to the signal.
+    
+    Args:
+        signal (np.ndarray): Input signal.
+        
+    Returns:
+        np.ndarray: Rectified signal (absolute values).
+    """
+    return np.abs(signal)
+
 def medianSubtractionFilter(signal, windowSize):
     """
     Estimates low-frequency drift using a sliding median filter then subtracts it.
@@ -62,7 +115,7 @@ def normaliseSignal(signal, definedMin=None, definedMax=None):
     Returns:
         np.ndarray: The normalized signal.
     """
-    return signal           # Remove this line to enable normalisation again (it ruined the results when ON)
+    # return signal           # Remove this line to enable normalisation again (it ruined the results when ON)
     minValue = min(signal)
     
     if definedMin is not None:
@@ -113,85 +166,28 @@ def filterSignal(signal, savgolWindow=31, savgolPoly=3, baselineWindowSize=301, 
 
     return signal
 
-# ==================================================================================
-# ================================ NOISE GENERATION ================================
-# ==================================================================================
-
-def loadNoiseSource(path='./Dataset/D6.mat'):
+def applyStandardSEMGProcessing(signal, fs=1000.0):
     """
-    Loads the D6 dataset to serve as a real-world noise source.
-
+    Wrapper function to apply the standard sEMG filtering pipeline:
+    Notch -> Bandpass -> Rectification.
+    
     Args:
-        path (str): The file path to the D6 .mat file. Defaults to './Dataset/D6.mat'.
-
-    Returns:
-        noiseData[np.ndarray]: The raw data vector from the noise source, or None if loading failed.
-    """
-    if not os.path.exists(path):
-        print(f"[WARNING] Noise source file not found: {path}")
-        return None
-    
-    try:
-        mat = spio.loadmat(path, squeeze_me=True)
-        noiseData = mat['d']
+        signal (np.ndarray): The raw sEMG signal.
+        fs (float): The sampling frequency.
         
-        # Remove DC offset from the noise source so it doesn't shift the signal
-        noiseData = noiseData - np.mean(noiseData)
-        # noiseData = medianSubtractionFilter(noiseData, 10001)
-        return noiseData
-    except Exception as e:
-        print(f"[ERROR] Failed to load noise source: {e}")
-        return None
-
-def addD6Noise(cleanSignal, noiseSource, targetSNR):
-    """
-    Superimposes realistic noise from a source signal onto a clean signal with target SNR.
-
-    Args:
-        cleanSignal (np.ndarray): Clean inoput
-        noiseSource (Optional[np.ndarray]): Noise source. If None, Gaussian noise is used.
-        targetSNR (float): SNR to use (dB).
-
     Returns:
-        noisySignalnp.ndarray: The resulting noisy signal.
+        np.ndarray: The clean, processed, and rectified signal ready for feature extraction.
     """
-    if noiseSource is None:
-        print("[INFO] D6 not available, falling back to Gaussian noise.")
-        cleanPeak = np.max(np.abs(cleanSignal)) 
-        signalPower = cleanPeak ** 2
-        
-        noisePower = signalPower / (10 ** (targetSNR / 10))
-        return cleanSignal + np.random.normal(0, np.sqrt(noisePower), len(cleanSignal))
-
-    sampleCount = len(cleanSignal)
-    noiseCount = len(noiseSource)
+    # 1. Remove 50Hz hum
+    clean_signal = notchFilter(signal, fs=fs, notchFreq=50.0)
     
-    # Slice them so the lengths are the same
-    if noiseCount > sampleCount:
-        startIndices = np.random.randint(0, noiseCount - sampleCount)
-        noiseWindow = noiseSource[startIndices : startIndices + sampleCount]    
-    else:
-        repeats = int(np.ceil(sampleCount / noiseCount))
-        noiseWindow = np.tile(noiseSource, repeats)[:sampleCount]       # Map to the same length of window
-
-    # Get power of clean signal
-    cleanPeak = np.max(np.abs(cleanSignal))
-    if cleanPeak == 0: 
-        return cleanSignal
-    cleanPower = cleanPeak ** 2 
-
-    # Get power of noise window
-    noiseWindowPower = np.mean(noiseWindow ** 2)
-    if noiseWindowPower == 0:
-        return cleanSignal
-
-    # Calculate the new noise power and apply
-    requiredNoisePower = cleanPower / (10 ** (targetSNR / 10))
-    scaleFactor = np.sqrt(requiredNoisePower / noiseWindowPower)
+    # 2. Bandpass between 20Hz and 450Hz
+    clean_signal = bandpassFilter(clean_signal, fs=fs, lowCut=20.0, highCut=450.0)
     
-    noisySignal = cleanSignal + (noiseWindow * scaleFactor)
+    # 3. Full-wave rectify
+    processed_signal = rectifySignal(clean_signal)
     
-    return noisySignal
+    return processed_signal
 
 # ====================================================================================
 # =========================== PRINCIPLE COMPONENT ANALYSIS ===========================

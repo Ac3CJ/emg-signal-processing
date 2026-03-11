@@ -64,14 +64,18 @@ CHANNEL_MAP = {
 }
 
 # Maps Rivela et al. movement classes to target Kinematics: [Yaw, Pitch, Roll, Elbow]
+# Yaw   = Flexion / Extension
+# Pitch = Abduction / Adduction
+# Roll  = Internal / External Rotation
+# Elbow = Elbow Flexion
 TARGET_MAPPING = {
-    1: [0.0, 0.0, 0.0, 0.0],     # Rest
-    2: [0.0, 45.0, 0.0, 0.0],    # Flexion 45
-    3: [0.0, 90.0, 0.0, 0.0],    # Flexion 90
-    4: [0.0, 110.0, 0.0, 0.0],   # Flexion 110
-    5: [0.0, -30.0, 0.0, 0.0],   # Hyperextension -30
-    6: [0.0, 0.0, 45.0, 0.0],    # Abduction 45
-    7: [0.0, 0.0, 90.0, 0.0],    # Abduction 90
-    8: [0.0, 45.0, 45.0, 0.0],   # Elevation 45
-    9: [0.0, 90.0, 90.0, 0.0]    # Elevation 90
+    1: [0.0, 0.0, 0.0, 0.0],       # Rest
+    2: [45.0, 0.0, 0.0, 0.0],      # Flexion 45 (Yaw)
+    3: [90.0, 0.0, 0.0, 0.0],      # Flexion 90 (Yaw)
+    4: [110.0, 0.0, 0.0, 0.0],     # Flexion 110 (Yaw)
+    5: [-30.0, 0.0, 0.0, 0.0],     # Hyperextension -30 (Yaw)
+    6: [0.0, 45.0, 0.0, 0.0],      # Abduction 45 (Pitch)
+    7: [0.0, 90.0, 0.0, 0.0],      # Abduction 90 (Pitch)
+    8: [45.0, 45.0, 0.0, 0.0],     # Elevation 45 (Yaw + Pitch)
+    9: [90.0, 90.0, 0.0, 0.0]      # Elevation 90 (Yaw + Pitch)
 }

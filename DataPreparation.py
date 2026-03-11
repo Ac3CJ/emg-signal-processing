@@ -3,27 +3,8 @@ import scipy.io
 import numpy as np
 import scipy.signal
 
-import SignalProcessing # Your math/filtering script
-
-# --- Configuration ---
-FS = 1000.0
-WINDOW_SIZE = 500
-INCREMENT = 62
-NUM_CHANNELS = 8
-
-# Map each movement file to a Kinematic Target: [Yaw, Pitch, Roll, Elbow]
-# Note: Elbow is 0 for all of these as the dataset only covers shoulder movements.
-TARGET_MAPPING = {
-    1: [0.0, 0.0, 0.0, 0.0],     # Rest
-    2: [0.0, 45.0, 0.0, 0.0],    # Flexion 45
-    3: [0.0, 90.0, 0.0, 0.0],    # Flexion 90
-    4: [0.0, 110.0, 0.0, 0.0],   # Flexion 110
-    5: [0.0, -30.0, 0.0, 0.0],   # Hyperextension -30
-    6: [0.0, 0.0, 45.0, 0.0],    # Abduction 45
-    7: [0.0, 0.0, 90.0, 0.0],    # Abduction 90
-    8: [0.0, 45.0, 45.0, 0.0],   # Elevation 45 (Approx 45 Pitch, 45 Roll)
-    9: [0.0, 90.0, 90.0, 0.0]    # Elevation 90 (Approx 90 Pitch, 90 Roll)
-}
+import SignalProcessing 
+import ControllerConfiguration as Config
 
 def detect_bursts_and_extract(signal_data, movement_class):
     """
@@ -35,10 +16,11 @@ def detect_bursts_and_extract(signal_data, movement_class):
     
     # Movement 1 is 'Rest'. There are no peaks to find, so we just blindly sample it.
     if movement_class == 1:
-        for start in range(0, num_samples - WINDOW_SIZE, 3000): # Jump by 3 seconds
-            for step in range(start, start + 3000 - WINDOW_SIZE, INCREMENT):
-                window = signal_data[:, step:step+WINDOW_SIZE]
-                extracted_windows.append(window)
+        for start in range(0, num_samples - Config.WINDOW_SIZE, 3000): # Jump by 3 seconds
+            for step in range(start, start + 3000 - Config.WINDOW_SIZE, Config.INCREMENT):
+                window = signal_data[:, step:step+Config.WINDOW_SIZE]
+                if window.shape[1] == Config.WINDOW_SIZE:
+                    extracted_windows.append(window)
         return extracted_windows
 
     # For active movements, calculate the total "energy" across all channels to find peaks
@@ -51,7 +33,7 @@ def detect_bursts_and_extract(signal_data, movement_class):
     peaks, _ = scipy.signal.find_peaks(smoothed_energy, distance=4000, prominence=np.max(smoothed_energy)*0.2)
     
     # Extract 1.5 seconds before and 1.5 seconds after each peak (3 seconds total)
-    half_hold = int(1.5 * FS)
+    half_hold = int(1.5 * Config.FS)
     
     for peak in peaks:
         start_idx = peak - half_hold
@@ -63,9 +45,12 @@ def detect_bursts_and_extract(signal_data, movement_class):
         burst_data = signal_data[:, start_idx:end_idx]
         
         # Chop the 3-second hold into overlapping 500ms windows
-        for step in range(0, burst_data.shape[1] - WINDOW_SIZE, INCREMENT):
-            window = burst_data[:, step:step+WINDOW_SIZE]
-            extracted_windows.append(window)
+        for step in range(0, burst_data.shape[1] - Config.WINDOW_SIZE, Config.INCREMENT):
+            window = burst_data[:, step:step+Config.WINDOW_SIZE]
+            
+            # Ensure all windows are the same size
+            if window.shape[1] == Config.WINDOW_SIZE:
+                extracted_windows.append(window)
             
     return extracted_windows
 
@@ -94,15 +79,15 @@ def load_and_prepare_dataset(base_path='./secondary_data'):
             
             # 1. Clean the entire file first using your pipeline
             clean_data = np.zeros_like(raw_data)
-            for c in range(NUM_CHANNELS):
+            for c in range(Config.NUM_CHANNELS):
                 # Using 30Hz highcut here for ECG removal as discussed
-                sig = SignalProcessing.notchFilter(raw_data[c, :], fs=FS, notchFreq=50.0)
-                sig = SignalProcessing.bandpassFilter(sig, fs=FS, lowCut=30.0, highCut=450.0)
+                sig = SignalProcessing.notchFilter(raw_data[c, :], fs=Config.FS, notchFreq=50.0)
+                sig = SignalProcessing.bandpassFilter(sig, fs=Config.FS, lowCut=30.0, highCut=450.0)
                 clean_data[c, :] = np.abs(sig) # Rectify
             
             # 2. Automatically find bursts and extract overlapping 500ms windows
             windows = detect_bursts_and_extract(clean_data, movement_class=m)
-            target_vector = TARGET_MAPPING[m]
+            target_vector = Config.TARGET_MAPPING[m]
             
             # 3. Append to our dataset
             for w in windows:

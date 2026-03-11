@@ -3,10 +3,11 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
+import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 
 import DataPreparation
-import ControllerConfiguration
+import ControllerConfiguration as Config
 
 # ====================================================================================
 # ============================== RCNN MODEL DEFINITION ===============================
@@ -72,6 +73,23 @@ class ShoulderRCNN(nn.Module):
 # ============================== TRAINING PIPELINE ===================================
 # ====================================================================================
 
+def plot_training_history(train_losses, val_losses):
+    """Generates and saves a learning curve plot after training."""
+    plt.figure(figsize=(10, 6))
+    plt.plot(train_losses, label='Training Loss (RMSE)', color='tab:blue', linewidth=2)
+    plt.plot(val_losses, label='Validation Loss (RMSE)', color='tab:orange', linewidth=2)
+    
+    plt.title('RCNN Regression Learning Curve', fontsize=16, fontweight='bold')
+    plt.xlabel('Epochs', fontsize=12)
+    plt.ylabel('Root Mean Squared Error', fontsize=12)
+    plt.legend(fontsize=12)
+    plt.grid(True, linestyle='--', alpha=0.7)
+    
+    plt.tight_layout()
+    plt.savefig('training_loss_curve.png', dpi=150)
+    print("\n[Visuals] Learning curve saved as 'training_loss_curve.png'.")
+    plt.show()
+
 def train_model(X_train, y_train, X_val, y_val, batch_size=64, epochs=50, patience=10):
     """
     Trains the PyTorch RCNN model with early stopping.
@@ -91,64 +109,84 @@ def train_model(X_train, y_train, X_val, y_val, batch_size=64, epochs=50, patien
     
     # Initialize Model, Loss (MSE for regression), and Optimizer
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"\n[{'-'*10} SYSTEM CHECK {'-'*10}]")
     print(f"Training on device: {device}")
+    print(f"Training Samples: {len(X_train)} | Validation Samples: {len(X_val)}")
     
-    model = ShoulderRCNN(num_channels=X_train.shape[2], num_outputs=y_train.shape[1]).to(device)
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    model = ShoulderRCNN(num_channels=X_train.shape[1], num_outputs=y_train.shape[1]).to(device)
+
+    optimizer_criterion = nn.MSELoss() 
+    tracker_criterion = nn.L1Loss() # L1 Loss is exactly Mean Absolute Error
+    optimizer = optim.Adam(model.parameters(), lr=Config.LEARNING_RATE)
     
     # Early stopping tracking
     best_val_loss = float('inf')
     epochs_no_improve = 0
     
-    print("Starting training phase...")
-    for epoch in range(epochs):
+    # History tracking for our visual graph
+    history_train_mae = []
+    history_val_mae = []
+
+    print(f"\n[{'-'*10} STARTING TRAINING {'-'*10}]")
+    for epoch in range(Config.EPOCHS):
         # --- Training Phase ---
         model.train()
-        train_loss = 0.0
+        train_mae = 0.0
         for batch_X, batch_y in train_loader:
             batch_X, batch_y = batch_X.to(device), batch_y.to(device)
             
             optimizer.zero_grad()
             predictions = model(batch_X)
-            loss = criterion(predictions, batch_y)
+            
+            loss = optimizer_criterion(predictions, batch_y)
             loss.backward()
             optimizer.step()
             
-            train_loss += loss.item() * batch_X.size(0)
+            # Track the MAE for visuals
+            mae = tracker_criterion(predictions, batch_y)
+            train_mae += mae.item() * batch_X.size(0)
             
-        train_loss /= len(train_loader.dataset)
+        train_mae /= len(train_loader.dataset)
+        history_train_mae.append(train_mae)
         
         # --- Validation Phase ---
         model.eval()
-        val_loss = 0.0
+        val_mae = 0.0
+        val_mse_loss = 0.0 # We still use MSE to determine the "Best Model"
         with torch.no_grad():
             for batch_X, batch_y in val_loader:
                 batch_X, batch_y = batch_X.to(device), batch_y.to(device)
                 predictions = model(batch_X)
-                loss = criterion(predictions, batch_y)
-                val_loss += loss.item() * batch_X.size(0)
                 
-        val_loss /= len(val_loader.dataset)
+                val_mse_loss += optimizer_criterion(predictions, batch_y).item() * batch_X.size(0)
+                val_mae += tracker_criterion(predictions, batch_y).item() * batch_X.size(0)
+                
+        val_mse_loss /= len(val_loader.dataset)
+        val_mae /= len(val_loader.dataset)
+        history_val_mae.append(val_mae)
         
-        print(f"Epoch {epoch+1:02d}/{epochs} | Train Loss (MSE): {train_loss:.4f} | Val Loss (MSE): {val_loss:.4f}")
-        
-        # Early Stopping Check
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        # --- Dynamic Console Print ---
+        status = ""
+        if val_mse_loss < best_val_loss:
+            best_val_loss = val_mse_loss
             epochs_no_improve = 0
-            # Save the best model
-            torch.save(model.state_dict(), 'best_shoulder_rcnn.pth')
+            torch.save(model.state_dict(), Config.MODEL_SAVE_PATH)
+            status = f"--> Saved Best Model"
         else:
             epochs_no_improve += 1
-            if epochs_no_improve >= patience:
-                print(f"Early stopping triggered after {epoch+1} epochs!")
-                break
+            status = f"--> No improvement ({epochs_no_improve}/{Config.PATIENCE})"
+            
+        # Print the MAE (Degrees) to the terminal so it makes sense to human eyes!
+        print(f"Epoch {epoch+1:02d}/{Config.EPOCHS} | Train Error: {train_mae:6.2f}° | Val Error: {val_mae:6.2f}° {status}")
+        
+        if epochs_no_improve >= Config.PATIENCE:
+            print(f"\n[STOP] Early stopping triggered.")
+            break
                 
-    print("Training complete! Best model saved as 'best_shoulder_rcnn.pth'")
+    print(f"\n[{'-'*10} TRAINING COMPLETE {'-'*10}]")
+    plot_training_history(history_train_mae, history_val_mae)
     
-    # Load the best weights before returning
-    model.load_state_dict(torch.load('best_shoulder_rcnn.pth'))
+    model.load_state_dict(torch.load(Config.MODEL_SAVE_PATH))
     return model
 
 # ====================================================================================

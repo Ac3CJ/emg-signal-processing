@@ -8,10 +8,6 @@ import SignalProcessing
 from ModelTraining import ShoulderRCNN  # Importing the PyTorch model we created
 import ControllerConfiguration as Config
 
-# --- Network Configuration (Matches your virt-env-tester.py) ---
-UDP_IP = "127.0.0.1"
-UDP_PORT = 5005
-
 class RealTimeProstheticController:
     def __init__(self, model_path='best_shoulder_rcnn.pth', simulate_data=False, sim_file=None):
         self.simulate_data = simulate_data
@@ -117,7 +113,7 @@ class RealTimeProstheticController:
                 packet_string = f"{yaw:.2f},{pitch:.2f},{roll:.2f},{elbow:.2f}"
                 print(f"Sending Telemetry: {packet_string}")
 
-                self.sock.sendto(packet_string.encode('utf-8'), (UDP_IP, UDP_PORT))
+                self.sock.sendto(packet_string.encode('utf-8'), (Config.UDP_IP, Config.UDP_PORT))
                 
                 # 7. Maintain Real-Time constraints (Wait until 62ms have passed)
                 elapsed_time = time.time() - loop_start_time

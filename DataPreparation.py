@@ -66,6 +66,9 @@ def load_and_prepare_dataset(base_path='./secondary_data'):
     
     for p in range(1, 9):       # Subjects 1 to 8
         for m in range(1, 10):  # Movements 1 to 9
+            if (p, m) in Config.CORRUPTED_TRIALS:
+                print(f"Skipping Blacklisted Trial: Subject {p}, Movement {m}")
+                continue
             file_path = os.path.join(base_path, f'Soggetto{p}', f'Movimento{m}.mat')
             
             if not os.path.exists(file_path):
@@ -81,8 +84,8 @@ def load_and_prepare_dataset(base_path='./secondary_data'):
             clean_data = np.zeros_like(raw_data)
             for c in range(Config.NUM_CHANNELS):
                 # Using 30Hz highcut here for ECG removal as discussed
-                sig = SignalProcessing.notchFilter(raw_data[c, :], fs=Config.FS, notchFreq=50.0)
-                sig = SignalProcessing.bandpassFilter(sig, fs=Config.FS, lowCut=30.0, highCut=450.0)
+                sig = SignalProcessing.notchFilter(raw_data[c, :], fs=Config.FS, notchFreq=Config.NOTCH_FREQ)
+                sig = SignalProcessing.bandpassFilter(sig, fs=Config.FS, lowCut=Config.BANDPASS_LOW, highCut=Config.BANDPASS_HIGH)
                 clean_data[c, :] = np.abs(sig) # Rectify
             
             # 2. Automatically find bursts and extract overlapping 500ms windows

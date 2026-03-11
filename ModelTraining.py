@@ -14,7 +14,7 @@ import ControllerConfiguration as Config
 # ====================================================================================
 
 class ShoulderRCNN(nn.Module):
-    def __init__(self, num_channels=8, num_outputs=4):
+    def __init__(self, num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS):
         super(ShoulderRCNN, self).__init__()
         
         # --- 1. Spatial Feature Extraction (CNN) ---
@@ -90,7 +90,7 @@ def plot_training_history(train_losses, val_losses):
     print("\n[Visuals] Learning curve saved as 'training_loss_curve.png'.")
     plt.show()
 
-def train_model(X_train, y_train, X_val, y_val, batch_size=64, epochs=50, patience=10):
+def train_model(X_train, y_train, X_val, y_val, batch_size=Config.BATCH_SIZE, epochs=Config.EPOCHS, patience=Config.PATIENCE):
     """
     Trains the PyTorch RCNN model with early stopping.
     """
@@ -197,7 +197,7 @@ if __name__ == "__main__":
     print("Loading actual dataset from secondary files...")
     
     # 1. Load the real data using our new script
-    X_full, y_full = DataPreparation.load_and_prepare_dataset(base_path='./secondary_data')
+    X_full, y_full = DataPreparation.load_and_prepare_dataset(base_path=Config.BASE_DATA_PATH)
     
     if len(X_full) == 0:
         print("ERROR: No data loaded. Check your file paths!")
@@ -205,7 +205,7 @@ if __name__ == "__main__":
         # 2. Shuffle and split into Training (80%) and Validation (20%)
         # random_state ensures reproducibility 
         X_train, X_val, y_train, y_val = train_test_split(
-            X_full, y_full, test_size=0.2, random_state=42, shuffle=True
+            X_full, y_full, test_size=Config.TEST_SPLIT, random_state=42, shuffle=True
         )
         
         print(f"Training on {len(X_train)} samples, Validating on {len(X_val)} samples...")

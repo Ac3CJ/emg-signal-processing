@@ -6,13 +6,14 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 
 import DataPreparation
+import ControllerConfiguration
 
 # ====================================================================================
 # ============================== RCNN MODEL DEFINITION ===============================
 # ====================================================================================
 
 class ShoulderRCNN(nn.Module):
-    def __init__(self, num_channels=8, num_outputs=3):
+    def __init__(self, num_channels=8, num_outputs=4):
         super(ShoulderRCNN, self).__init__()
         
         # --- 1. Spatial Feature Extraction (CNN) ---
@@ -38,8 +39,6 @@ class ShoulderRCNN(nn.Module):
 
     def forward(self, x):
         # x is originally (Batch, TimeSteps=500, Channels=8)
-        # We must swap dimensions for Conv1d to (Batch, Channels, TimeSteps)
-        x = x.permute(0, 2, 1)
         
         # CNN Block 1
         x = self.relu(self.conv1(x))

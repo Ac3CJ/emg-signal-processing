@@ -4,20 +4,13 @@ import numpy as np
 import torch
 import argparse
 
-# Import your dedicated modules (Ensure these files are in the same directory)
 import SignalProcessing
 from ModelTraining import ShoulderRCNN  # Importing the PyTorch model we created
+import ControllerConfiguration as Config
 
 # --- Network Configuration (Matches your virt-env-tester.py) ---
 UDP_IP = "127.0.0.1"
 UDP_PORT = 5005
-
-# --- Processing Configuration ---
-FS = 1000.0                 # 1.0 kHz sampling rate
-WINDOW_SIZE = 500           # 500 ms window
-INCREMENT = 62              # 62 ms step (approx 16 Hz update rate)
-NUM_CHANNELS = 8
-NUM_OUTPUTS = 4             # Yaw, Pitch, Roll, Elbow (Elbow included as requested)
 
 class RealTimeProstheticController:
     def __init__(self, model_path='best_shoulder_rcnn.pth', simulate_data=False):
@@ -36,7 +29,7 @@ class RealTimeProstheticController:
         print(f"Loading PyTorch model on: {self.device}")
         
         # Initialize model (Note: Ensure ModelTraining.py is updated to output 4 features)
-        self.model = ShoulderRCNN(num_channels=NUM_CHANNELS, num_outputs=NUM_OUTPUTS).to(self.device)
+        self.model = ShoulderRCNN(num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS).to(self.device)
         
         try:
             self.model.load_state_dict(torch.load(model_path, map_location=self.device))
@@ -47,11 +40,11 @@ class RealTimeProstheticController:
         
         # 3. Initialize the Sliding Window Buffer
         # Shape: (8 channels, 500 samples)
-        self.data_buffer = np.zeros((NUM_CHANNELS, WINDOW_SIZE))
+        self.data_buffer = np.zeros((Config.NUM_CHANNELS, Config.WINDOW_SIZE))
         
         # Smoothing filter for output kinematics (Moving average to prevent jitter)
         self.alpha = 0.3  # Smoothing factor (0.0 to 1.0)
-        self.smoothed_output = np.zeros(NUM_OUTPUTS)
+        self.smoothed_output = np.zeros(Config.NUM_OUTPUTS)
 
     def read_new_samples(self, num_samples):
         """
@@ -60,7 +53,7 @@ class RealTimeProstheticController:
         """
         if self.simulate_data:
             # Generate dummy sEMG data for all 8 channels
-            return np.random.randn(NUM_CHANNELS, num_samples) * 0.1
+            return np.random.randn(Config.NUM_CHANNELS, num_samples) * 0.1
         else:
             # TODO: Phase 3 - Replace this with your actual SensorReader.py logic
             # e.g., return SensorReader.get_latest_samples(num_samples)
@@ -78,16 +71,16 @@ class RealTimeProstheticController:
                 loop_start_time = time.time()
                 
                 # 1. Fetch new data (62 samples for the 62ms increment)
-                new_data = self.read_new_samples(INCREMENT)
+                new_data = self.read_new_samples(Config.INCREMENT)
                 
                 # 2. Shift the buffer left and append new data to the right
-                self.data_buffer = np.roll(self.data_buffer, -INCREMENT, axis=1)
-                self.data_buffer[:, -INCREMENT:] = new_data
+                self.data_buffer = np.roll(self.data_buffer, -Config.INCREMENT, axis=1)
+                self.data_buffer[:, -Config.INCREMENT:] = new_data
                 
                 # 3. Clean the 500ms window using your SignalProcessing.py pipeline
                 cleaned_window = np.zeros_like(self.data_buffer)
-                for i in range(NUM_CHANNELS):
-                    cleaned_window[i, :] = SignalProcessing.applyStandardSEMGProcessing(self.data_buffer[i, :], fs=FS)
+                for i in range(Config.NUM_CHANNELS):
+                    cleaned_window[i, :] = SignalProcessing.applyStandardSEMGProcessing(self.data_buffer[i, :], fs=Config.FS)
                 
                 # 4. Neural Network Inference
                 # Convert (8, 500) numpy array to PyTorch Tensor shape (1, 8, 500) [Batch=1]
@@ -109,7 +102,7 @@ class RealTimeProstheticController:
                 
                 # 7. Maintain Real-Time constraints (Wait until 62ms have passed)
                 elapsed_time = time.time() - loop_start_time
-                sleep_time = max(0, (INCREMENT / 1000.0) - elapsed_time)
+                sleep_time = max(0, (Config.INCREMENT / 1000.0) - elapsed_time)
                 time.sleep(sleep_time)
                 
         except KeyboardInterrupt:

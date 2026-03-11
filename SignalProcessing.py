@@ -7,15 +7,10 @@ import os
 
 from scipy import ndimage
 from sklearn.decomposition import PCA
-
-SAMPLE_FREQUENCY = 25000
+import ControllerConfiguration as Config
 
 # ====================================================================================
 # ================================ CLASSIC PROCESSING ================================
-# ====================================================================================
-
-# ====================================================================================
-# ============================== SEMG STANDARD PIPELINE ==============================
 # ====================================================================================
 
 def notchFilter(signal, fs=1000.0, notchFreq=50.0, qualityFactor=30.0):
@@ -179,10 +174,10 @@ def applyStandardSEMGProcessing(signal, fs=1000.0):
         np.ndarray: The clean, processed, and rectified signal ready for feature extraction.
     """
     # 1. Remove 50Hz hum
-    clean_signal = notchFilter(signal, fs=fs, notchFreq=50.0)
+    clean_signal = notchFilter(signal, fs=fs, notchFreq=Config.NOTCH_FREQ)
     
     # 2. Bandpass between 30Hz (ECG Data) and 450Hz
-    clean_signal = bandpassFilter(clean_signal, fs=fs, lowCut=30.0, highCut=450.0)
+    clean_signal = bandpassFilter(clean_signal, fs=fs, lowCut=Config.BANDPASS_LOW, highCut=Config.BANDPASS_HIGH)
     
     # 3. Full-wave rectify
     processed_signal = rectifySignal(clean_signal)

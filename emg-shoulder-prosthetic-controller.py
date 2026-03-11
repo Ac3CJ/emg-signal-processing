@@ -1,11 +1,14 @@
+import sys
 import time
 import socket
 import numpy as np
 import torch
 import argparse
+import pyqtgraph as pg
+from pyqtgraph.Qt import QtCore, QtWidgets
 
 import SignalProcessing
-from ModelTraining import ShoulderRCNN  # Importing the PyTorch model we created
+from ModelTraining import ShoulderRCNN 
 import ControllerConfiguration as Config
 
 class RealTimeProstheticController:
@@ -42,10 +45,59 @@ class RealTimeProstheticController:
         except FileNotFoundError:
             print(f"WARNING: '{model_path}' not found. Using untrained weights.")
         
-        # 3. Initialize the Sliding Window Buffer
+        # 3. Initialize Data Buffers
+        # data_buffer is exactly 500ms long for the Neural Network
         self.data_buffer = np.zeros((Config.NUM_CHANNELS, Config.WINDOW_SIZE))
+        
+        # vis_buffer is 3 windows long (1500ms) for the GUI
+        self.vis_window_size = Config.WINDOW_SIZE * 3 
+        self.vis_buffer = np.zeros((Config.NUM_CHANNELS, self.vis_window_size))
+        
         self.alpha = Config.SMOOTHING_ALPHA
         self.smoothed_output = np.zeros(Config.NUM_OUTPUTS)
+
+        # 4. Setup GUI
+        self.setup_gui()
+
+    def setup_gui(self):
+        """Initializes the PyQtGraph visualizer."""
+        self.app = QtWidgets.QApplication(sys.argv)
+        
+        # Create the main window
+        self.win = pg.GraphicsLayoutWidget(show=True, title="Real-Time sEMG Stream")
+        self.win.resize(1000, 800)
+        self.win.setWindowTitle('Non-Invasive Prosthetic Controller - Live Feed')
+        
+        self.plots = []
+        self.curves = []
+        
+        # Create 8 stacked plots
+        for i in range(Config.NUM_CHANNELS):
+            p = self.win.addPlot(row=i, col=0)
+            p.showGrid(x=True, y=True, alpha=0.3)
+            p.setLabel('left', Config.CHANNEL_MAP.get(i, f"Ch {i}"))
+            
+            # Hide X-axis on all but the bottom plot for a cleaner look
+            if i < Config.NUM_CHANNELS - 1:
+                p.hideAxis('bottom')
+            
+            # Add the red dotted line 500ms from the right edge
+            vLine = pg.InfiniteLine(angle=90, movable=False, pos=self.vis_window_size - Config.WINDOW_SIZE)
+            
+            # Cross-compatible Qt DashLine check (PyQt6 vs PyQt5)
+            try:
+                dash_style = QtCore.Qt.PenStyle.DashLine
+            except AttributeError:
+                dash_style = QtCore.Qt.DashLine
+                
+            vLine.setPen(pg.mkPen(color='r', style=dash_style, width=2))
+            p.addItem(vLine)
+            
+            # Create the curve object we will update rapidly
+            curve = p.plot(pen=pg.mkPen(color=(50, 150, 255), width=1))
+            
+            self.plots.append(p)
+            self.curves.append(curve)
 
     def read_new_samples(self, num_samples):
         """
@@ -72,59 +124,62 @@ class RealTimeProstheticController:
             # TODO: Hardware code goes here later
             pass
 
-    def run_control_loop(self):
+    def control_step(self):
         """
-        The main loop that updates the buffer, processes the signal, 
-        runs the inference, and sends telemetry.
+        This replaces the while loop. It is triggered every 62ms by the QTimer.
         """
-        print("\nStarting Real-Time Control Loop. Press Ctrl+C to stop.")
+        # 1. Fetch new data
+        new_data = self.read_new_samples(Config.INCREMENT)
         
+        # 2. Update Neural Network Buffer (500 samples)
+        self.data_buffer = np.roll(self.data_buffer, -Config.INCREMENT, axis=1)
+        self.data_buffer[:, -Config.INCREMENT:] = new_data
+        
+        # 3. Update Visual Buffer (1500 samples)
+        self.vis_buffer = np.roll(self.vis_buffer, -Config.INCREMENT, axis=1)
+        self.vis_buffer[:, -Config.INCREMENT:] = new_data
+        
+        # 4. Update the GUI Curves
+        for i in range(Config.NUM_CHANNELS):
+            self.curves[i].setData(self.vis_buffer[i])
+        
+        # 5. Clean the 500ms window for the NN
+        cleaned_window = np.zeros_like(self.data_buffer)
+        for i in range(Config.NUM_CHANNELS):
+            cleaned_window[i, :] = SignalProcessing.applyStandardSEMGProcessing(self.data_buffer[i, :], fs=Config.FS)
+        
+        # 6. Neural Network Inference
+        input_tensor = torch.tensor(cleaned_window, dtype=torch.float32).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            raw_predictions = self.model(input_tensor).cpu().numpy()[0]
+        
+        # 7. Kinematic Smoothing
+        self.smoothed_output = (self.alpha * raw_predictions) + ((1 - self.alpha) * self.smoothed_output)
+        yaw, pitch, roll, elbow = self.smoothed_output
+        
+        # 8. Send Telemetry
+        packet_string = f"{yaw:.2f},{pitch:.2f},{roll:.2f},{elbow:.2f}"
+        print(f"Sending Telemetry: {packet_string}")
         try:
-            while True:
-                loop_start_time = time.time()
-                
-                # 1. Fetch new data (62 samples for the 62ms increment)
-                new_data = self.read_new_samples(Config.INCREMENT)
-                
-                # 2. Shift the buffer left and append new data to the right
-                self.data_buffer = np.roll(self.data_buffer, -Config.INCREMENT, axis=1)
-                self.data_buffer[:, -Config.INCREMENT:] = new_data
-                
-                # 3. Clean the 500ms window using your SignalProcessing.py pipeline
-                cleaned_window = np.zeros_like(self.data_buffer)
-                for i in range(Config.NUM_CHANNELS):
-                    cleaned_window[i, :] = SignalProcessing.applyStandardSEMGProcessing(self.data_buffer[i, :], fs=Config.FS)
-                
-                # 4. Neural Network Inference
-                # Convert (8, 500) numpy array to PyTorch Tensor shape (1, 8, 500) [Batch=1]
-                input_tensor = torch.tensor(cleaned_window, dtype=torch.float32).unsqueeze(0).to(self.device)
-                
-                with torch.no_grad():
-                    # Output shape will be (1, 4) -> [Yaw, Pitch, Roll, Elbow]
-                    raw_predictions = self.model(input_tensor).cpu().numpy()[0]
-                
-                # 5. Kinematic Smoothing (Exponential Moving Average)
-                self.smoothed_output = (self.alpha * raw_predictions) + ((1 - self.alpha) * self.smoothed_output)
-                
-                # Extract values
-                yaw, pitch, roll, elbow = self.smoothed_output
-                
-                # 6. Send Telemetry to Virtual Environment
-                packet_string = f"{yaw:.2f},{pitch:.2f},{roll:.2f},{elbow:.2f}"
-                print(f"Sending Telemetry: {packet_string}")
+            self.sock.sendto(packet_string.encode('utf-8'), (Config.UDP_IP, Config.UDP_PORT))
+        except Exception as e:
+            pass # Ignore UDP errors so it doesn't crash the loop
 
-                self.sock.sendto(packet_string.encode('utf-8'), (Config.UDP_IP, Config.UDP_PORT))
-                
-                # 7. Maintain Real-Time constraints (Wait until 62ms have passed)
-                elapsed_time = time.time() - loop_start_time
-                sleep_time = max(0, (Config.INCREMENT / 1000.0) - elapsed_time)
-                time.sleep(sleep_time)
-                
-        except KeyboardInterrupt:
-            print("\nControl loop stopped by user.")
+    def run(self):
+        """Starts the Qt Event Loop and the hardware timer."""
+        print("\nStarting Real-Time Control GUI. Close the window to stop.")
+        
+        # Create a QTimer that triggers control_step every 62ms
+        self.timer = QtCore.QTimer()
+        self.timer.timeout.connect(self.control_step)
+        self.timer.start(Config.INCREMENT)
+        
+        # Start the GUI event loop
+        try:
+            sys.exit(self.app.exec())
         finally:
             self.sock.close()
-            print("UDP Socket closed.")
+            print("UDP Socket closed safely.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Real-Time EMG Prosthetic Controller")
@@ -141,4 +196,4 @@ if __name__ == "__main__":
         simulate_data=args.simulate,
         sim_file=args.sim_file
     )
-    controller.run_control_loop()
+    controller.run()

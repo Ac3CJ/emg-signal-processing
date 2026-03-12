@@ -9,50 +9,58 @@ import ControllerConfiguration as Config
 def detect_bursts_and_extract(signal_data, movement_class):
     """
     Finds the 10 active muscle contractions in the data, extracts the 3-second
-    isometric hold, and slices it into 500ms windows.
+    isometric hold, AND extracts the resting valleys between them.
+    Returns: (active_windows, rest_windows)
     """
     num_channels, num_samples = signal_data.shape
-    extracted_windows = []
+    active_windows = []
+    rest_windows = []
     
-    # Movement 9 is 'Rest'. There are no peaks to find, so we just blindly sample it.
+    # Movement 9 is 'Rest'. Just sample it all as rest.
     if movement_class == 9:
-        for start in range(0, num_samples - Config.WINDOW_SIZE, 3000): # Jump by 3 seconds
+        for start in range(0, num_samples - Config.WINDOW_SIZE, 3000):
             for step in range(start, start + 3000 - Config.WINDOW_SIZE, Config.INCREMENT):
                 window = signal_data[:, step:step+Config.WINDOW_SIZE]
                 if window.shape[1] == Config.WINDOW_SIZE:
-                    extracted_windows.append(window)
-        return extracted_windows
+                    rest_windows.append(window)
+        return active_windows, rest_windows
 
-    # For active movements, calculate the total "energy" across all channels to find peaks
-    # We use a simple moving average of the summed rectified signals
+    # Find the peaks
     summed_energy = np.sum(signal_data, axis=0)
-    smoothed_energy = scipy.signal.medfilt(summed_energy, kernel_size=1001) # 1-second smoothing
-    
-    # Find the peaks of these muscular bursts. 
-    # distance=4000 ensures we don't double-count the same burst (4 seconds apart)
+    smoothed_energy = scipy.signal.medfilt(summed_energy, kernel_size=1001)
     peaks, _ = scipy.signal.find_peaks(smoothed_energy, distance=4000, prominence=np.max(smoothed_energy)*0.2)
     
-    # Extract 1.5 seconds before and 1.5 seconds after each peak (3 seconds total)
     half_hold = int(1.5 * Config.FS)
+    last_end_idx = 0  # Keep track of where the last burst ended
     
     for peak in peaks:
         start_idx = peak - half_hold
         end_idx = peak + half_hold
         
         if start_idx < 0 or end_idx > num_samples:
-            continue # Skip if burst is too close to the start/end of the file
+            continue 
             
+        # 1. EXTRACT THE RESTING VALLEY (From end of last burst to start of this one)
+        # We leave a small 500ms buffer so we don't accidentally grab the ramp-up phase
+        valley_start = last_end_idx + 500
+        valley_end = start_idx - 500
+        if valley_end - valley_start > Config.WINDOW_SIZE:
+            rest_data = signal_data[:, valley_start:valley_end]
+            for step in range(0, rest_data.shape[1] - Config.WINDOW_SIZE, Config.INCREMENT):
+                window = rest_data[:, step:step+Config.WINDOW_SIZE]
+                if window.shape[1] == Config.WINDOW_SIZE:
+                    rest_windows.append(window)
+
+        # 2. EXTRACT THE ACTIVE BURST
         burst_data = signal_data[:, start_idx:end_idx]
-        
-        # Chop the 3-second hold into overlapping 500ms windows
         for step in range(0, burst_data.shape[1] - Config.WINDOW_SIZE, Config.INCREMENT):
             window = burst_data[:, step:step+Config.WINDOW_SIZE]
-            
-            # Ensure all windows are the same size
             if window.shape[1] == Config.WINDOW_SIZE:
-                extracted_windows.append(window)
+                active_windows.append(window)
+                
+        last_end_idx = end_idx
             
-    return extracted_windows
+    return active_windows, rest_windows
 
 def load_and_prepare_dataset(base_path='./secondary_data'):
     """
@@ -63,6 +71,7 @@ def load_and_prepare_dataset(base_path='./secondary_data'):
     y_targets = []
     
     print("Beginning automated data extraction and labelling...")
+    REST_VECTOR = Config.TARGET_MAPPING[9] # [0.0, 0.0, 0.0, 0.0]
     
     for p in range(1, 9):       # Subjects 1 to 8
         for m in range(1, 10):  # Movements 1 to 9
@@ -89,13 +98,18 @@ def load_and_prepare_dataset(base_path='./secondary_data'):
                 clean_data[c, :] = np.abs(sig) # Rectify
             
             # 2. Automatically find bursts and extract overlapping 500ms windows
-            windows = detect_bursts_and_extract(clean_data, movement_class=m)
+            active_windows, rest_windows = detect_bursts_and_extract(clean_data, movement_class=m)
             target_vector = Config.TARGET_MAPPING[m]
             
             # 3. Append to our dataset
-            for w in windows:
+            for w in active_windows:
                 X_data.append(w)
                 y_targets.append(target_vector)
+                
+            # explicitly label the inter-burst valleys as absolute zero
+            for w in rest_windows:
+                X_data.append(w)
+                y_targets.append(REST_VECTOR)
                 
         print(f"Processed Subject {p}...")
 

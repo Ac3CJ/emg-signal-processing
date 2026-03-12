@@ -30,9 +30,9 @@ FILTER_ORDER = 4            # Butterworth filter order
 # ====================================================================================
 # 4. NEURAL NETWORK TRAINING PARAMETERS
 # ====================================================================================
-EPOCHS = 50
+EPOCHS = 100
 BATCH_SIZE = 64
-PATIENCE = 10               # Early stopping patience
+PATIENCE = 20              # Early stopping patience
 LEARNING_RATE = 0.001
 TEST_SPLIT = 0.2            # 20% of data used for validation
 
@@ -69,15 +69,15 @@ CHANNEL_MAP = {
 # Roll  = Internal / External Rotation
 # Elbow = Elbow Flexion
 TARGET_MAPPING = {
-    1: [0.0, 0.0, 0.0, 0.0],       # Rest
-    2: [45.0, 0.0, 0.0, 0.0],      # Flexion 45 (Yaw)
-    3: [90.0, 0.0, 0.0, 0.0],      # Flexion 90 (Yaw)
-    4: [110.0, 0.0, 0.0, 0.0],     # Flexion 110 (Yaw)
-    5: [-30.0, 0.0, 0.0, 0.0],     # Hyperextension -30 (Yaw)
-    6: [0.0, 45.0, 0.0, 0.0],      # Abduction 45 (Pitch)
-    7: [0.0, 90.0, 0.0, 0.0],      # Abduction 90 (Pitch)
-    8: [45.0, 45.0, 0.0, 0.0],     # Elevation 45 (Yaw + Pitch)
-    9: [90.0, 90.0, 0.0, 0.0]      # Elevation 90 (Yaw + Pitch)
+    1: [45.0, 0.0, 0.0, 0.0],      # Flexion 45 (Yaw)
+    2: [90.0, 0.0, 0.0, 0.0],      # Flexion 90 (Yaw)
+    3: [110.0, 0.0, 0.0, 0.0],     # Flexion 110 (Yaw)
+    4: [-30.0, 0.0, 0.0, 0.0],     # Hyperextension -30 (Yaw)
+    5: [0.0, 45.0, 0.0, 0.0],      # Abduction 45 (Pitch)
+    6: [0.0, 90.0, 0.0, 0.0],      # Abduction 90 (Pitch)
+    7: [45.0, 45.0, 0.0, 0.0],     # Elevation 45 (Yaw + Pitch)
+    8: [90.0, 90.0, 0.0, 0.0],     # Elevation 90 (Yaw + Pitch)
+    9: [0.0, 0.0, 0.0, 0.0]        # Rest
 }
 
 # Not Indexed at 0 for easier human readability (Subject 1 = Soggetto1, Movement 1 = Movimento1)

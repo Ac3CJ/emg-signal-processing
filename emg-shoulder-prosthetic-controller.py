@@ -71,12 +71,18 @@ class RealTimeProstheticController:
         self.plots = []
         self.curves = []
         
+        Y_MIN = -0.0002
+        Y_MAX = 0.0004
+
         # Create 8 stacked plots
         for i in range(Config.NUM_CHANNELS):
             p = self.win.addPlot(row=i, col=0)
             p.showGrid(x=True, y=True, alpha=0.3)
             p.setLabel('left', Config.CHANNEL_MAP.get(i, f"Ch {i}"))
             
+            p.setYRange(Y_MIN, Y_MAX, padding=0)
+            p.disableAutoRange(axis=pg.ViewBox.YAxis)
+
             # Hide X-axis on all but the bottom plot for a cleaner look
             if i < Config.NUM_CHANNELS - 1:
                 p.hideAxis('bottom')

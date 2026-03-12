@@ -14,8 +14,8 @@ def detect_bursts_and_extract(signal_data, movement_class):
     num_channels, num_samples = signal_data.shape
     extracted_windows = []
     
-    # Movement 1 is 'Rest'. There are no peaks to find, so we just blindly sample it.
-    if movement_class == 1:
+    # Movement 9 is 'Rest'. There are no peaks to find, so we just blindly sample it.
+    if movement_class == 9:
         for start in range(0, num_samples - Config.WINDOW_SIZE, 3000): # Jump by 3 seconds
             for step in range(start, start + 3000 - Config.WINDOW_SIZE, Config.INCREMENT):
                 window = signal_data[:, step:step+Config.WINDOW_SIZE]

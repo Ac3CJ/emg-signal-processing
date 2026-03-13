@@ -4,6 +4,7 @@ import socket
 import numpy as np
 import torch
 import argparse
+import re
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
 
@@ -15,12 +16,20 @@ class RealTimeProstheticController:
     def __init__(self, model_path='best_shoulder_rcnn.pth', simulate_data=False, sim_file=None):
         self.simulate_data = simulate_data
         
+        # --- PARSE TRIAL NAME FOR TITLES ---
+        self.trial_name = "Live Stream"
+        if sim_file:
+            # Extracts the numbers after 'Soggetto' and 'Movimento' to create 'PxMx'
+            match = re.search(r'Soggetto(\d+).*Movimento(\d+)', sim_file)
+            if match:
+                self.trial_name = f"P{match.group(1)}M{match.group(2)}"
+
         # --- LOAD SIMULATION DATA ---
         if self.simulate_data and sim_file:
             import scipy.io
             import os
             if os.path.exists(sim_file):
-                print(f"Loading simulation stream from: {sim_file}")
+                print(f"Loading simulation stream from: {sim_file} ({self.trial_name})")
                 mat = scipy.io.loadmat(sim_file)
                 self.sim_data_stream = mat['EMGDATA'] # Shape: (8, total_samples)
                 self.sim_playback_idx = 0
@@ -46,13 +55,19 @@ class RealTimeProstheticController:
             print(f"WARNING: '{model_path}' not found. Using untrained weights.")
         
         # 3. Initialize Data Buffers
-        # data_buffer is exactly 500ms long for the Neural Network
+        # data_buffer is exactly 500ms long for the NN
         self.data_buffer = np.zeros((Config.NUM_CHANNELS, Config.WINDOW_SIZE))
         
-        # vis_buffer is 3 windows long (1500ms) for the GUI
+        # vis_buffer is 3 windows long (1500ms) for the EMG GUI
         self.vis_window_size = Config.WINDOW_SIZE * 3 
         self.vis_buffer = np.zeros((Config.NUM_CHANNELS, self.vis_window_size))
         
+        # --- NEW: Kinematic History Buffers ---
+        # Stores the last 200 predictions (~12 seconds of history at 62ms increments)
+        self.kinematic_history_len = 200
+        self.yaw_history = np.zeros(self.kinematic_history_len)
+        self.pitch_history = np.zeros(self.kinematic_history_len)
+
         self.alpha = Config.SMOOTHING_ALPHA
         self.smoothed_output = np.zeros(Config.NUM_OUTPUTS)
 
@@ -60,37 +75,35 @@ class RealTimeProstheticController:
         self.setup_gui()
 
     def setup_gui(self):
-        """Initializes the PyQtGraph visualizer."""
+        """Initializes both the EMG and Kinematics PyQtGraph visualizers."""
         self.app = QtWidgets.QApplication(sys.argv)
         
-        # Create the main window
-        self.win = pg.GraphicsLayoutWidget(show=True, title="Real-Time sEMG Stream")
-        self.win.resize(1000, 800)
-        self.win.setWindowTitle('Non-Invasive Prosthetic Controller - Live Feed')
+        # ==========================================================================
+        # ======================== WINDOW 1: RAW EMG STREAM ========================
+        # ==========================================================================
+        self.win_emg = pg.GraphicsLayoutWidget(show=True, title=f"sEMG Stream - {self.trial_name}")
+        self.win_emg.resize(1000, 800)
+        self.win_emg.setWindowTitle(f'EMG Feed ({self.trial_name})')
         
-        self.plots = []
-        self.curves = []
+        self.plots_emg = []
+        self.curves_emg = []
         
         Y_MIN = -0.0002
         Y_MAX = 0.0004
 
-        # Create 8 stacked plots
         for i in range(Config.NUM_CHANNELS):
-            p = self.win.addPlot(row=i, col=0)
+            p = self.win_emg.addPlot(row=i, col=0)
             p.showGrid(x=True, y=True, alpha=0.3)
             p.setLabel('left', Config.CHANNEL_MAP.get(i, f"Ch {i}"))
             
             p.setYRange(Y_MIN, Y_MAX, padding=0)
             p.disableAutoRange(axis=pg.ViewBox.YAxis)
 
-            # Hide X-axis on all but the bottom plot for a cleaner look
             if i < Config.NUM_CHANNELS - 1:
                 p.hideAxis('bottom')
             
-            # Add the red dotted line 500ms from the right edge
             vLine = pg.InfiniteLine(angle=90, movable=False, pos=self.vis_window_size - Config.WINDOW_SIZE)
             
-            # Cross-compatible Qt DashLine check (PyQt6 vs PyQt5)
             try:
                 dash_style = QtCore.Qt.PenStyle.DashLine
             except AttributeError:
@@ -99,11 +112,33 @@ class RealTimeProstheticController:
             vLine.setPen(pg.mkPen(color='r', style=dash_style, width=2))
             p.addItem(vLine)
             
-            # Create the curve object we will update rapidly
             curve = p.plot(pen=pg.mkPen(color=(50, 150, 255), width=1))
-            
-            self.plots.append(p)
-            self.curves.append(curve)
+            self.plots_emg.append(p)
+            self.curves_emg.append(curve)
+        
+        # =============================================================================
+        # ======================== WINDOW 2: KINEMATICS OUTPUT ========================
+        # =============================================================================
+        self.win_kin = pg.GraphicsLayoutWidget(show=True, title=f"Kinematics - {self.trial_name}")
+        self.win_kin.resize(800, 400)
+        self.win_kin.setWindowTitle(f'Predicted Output ({self.trial_name})')
+        
+        self.plot_kin = self.win_kin.addPlot(title=f"Joint Angles: {self.trial_name}")
+        self.plot_kin.showGrid(x=True, y=True, alpha=0.5)
+        
+        # Set bounds slightly past your max flexion to keep the graph stable
+        self.plot_kin.setYRange(-40, 130, padding=0)
+        self.plot_kin.disableAutoRange(axis=pg.ViewBox.YAxis)
+        
+        self.plot_kin.setLabel('left', 'Angle (Degrees)')
+        self.plot_kin.setLabel('bottom', 'Time Steps (62ms)')
+        
+        # Add the Legend
+        self.plot_kin.addLegend(offset=(10, 10))
+        
+        # Add the two contrasting curves
+        self.curve_yaw = self.plot_kin.plot(pen=pg.mkPen('r', width=3), name='Yaw (Flexion)')
+        self.curve_pitch = self.plot_kin.plot(pen=pg.mkPen('c', width=3), name='Pitch (Abduction)')
 
     def read_new_samples(self, num_samples):
         """
@@ -131,9 +166,7 @@ class RealTimeProstheticController:
             pass
 
     def control_step(self):
-        """
-        This replaces the while loop. It is triggered every 62ms by the QTimer.
-        """
+        """Triggered every 62ms by the QTimer."""
         # 1. Fetch new data
         new_data = self.read_new_samples(Config.INCREMENT)
         
@@ -145,9 +178,9 @@ class RealTimeProstheticController:
         self.vis_buffer = np.roll(self.vis_buffer, -Config.INCREMENT, axis=1)
         self.vis_buffer[:, -Config.INCREMENT:] = new_data
         
-        # 4. Update the GUI Curves
+        # 4. Update the EMG GUI Curves
         for i in range(Config.NUM_CHANNELS):
-            self.curves[i].setData(self.vis_buffer[i])
+            self.curves_emg[i].setData(self.vis_buffer[i])
         
         # 5. Clean the 500ms window for the NN
         cleaned_window = np.zeros_like(self.data_buffer)
@@ -163,13 +196,23 @@ class RealTimeProstheticController:
         self.smoothed_output = (self.alpha * raw_predictions) + ((1 - self.alpha) * self.smoothed_output)
         yaw, pitch, roll, elbow = self.smoothed_output
         
+        # --- NEW: Update Kinematic GUI Buffers & Plot ---
+        self.yaw_history = np.roll(self.yaw_history, -1)
+        self.yaw_history[-1] = yaw
+        
+        self.pitch_history = np.roll(self.pitch_history, -1)
+        self.pitch_history[-1] = pitch
+        
+        self.curve_yaw.setData(self.yaw_history)
+        self.curve_pitch.setData(self.pitch_history)
+
         # 8. Send Telemetry
         packet_string = f"{yaw:.2f},{pitch:.2f},{roll:.2f},{elbow:.2f}"
         print(f"Sending Telemetry: {packet_string}")
         try:
             self.sock.sendto(packet_string.encode('utf-8'), (Config.UDP_IP, Config.UDP_PORT))
         except Exception as e:
-            pass # Ignore UDP errors so it doesn't crash the loop
+            pass
 
     def run(self):
         """Starts the Qt Event Loop and the hardware timer."""
@@ -191,8 +234,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Real-Time EMG Prosthetic Controller")
     parser.add_argument('--simulate', action='store_true', help='Generate dummy sEMG data instead of reading hardware')
     parser.add_argument('--model', type=str, default=Config.MODEL_SAVE_PATH, help='Path to the trained PyTorch weights')
-    
-    # NEW ARGUMENT: Allows you to pick exactly which file to test!
     parser.add_argument('--sim_file', type=str, default='./secondary_data/Soggetto1/Movimento3.mat', help='Specific .mat file to stream during simulation')
     
     args = parser.parse_args()

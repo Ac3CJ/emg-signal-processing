@@ -16,7 +16,7 @@ NUM_OUTPUTS = 4             # Output DOFs: [Yaw, Pitch, Roll, Elbow]
 # ====================================================================================
 WINDOW_SIZE = 500           # 500 ms window size
 INCREMENT = 62              # 62 ms step size (~16 Hz update rate)
-SMOOTHING_ALPHA = 0.3       # Exponential moving average factor for kinematic output (0.0 to 1.0)
+SMOOTHING_ALPHA = 0.1       # Exponential moving average factor for kinematic output (0.0 to 1.0)
 
 # ====================================================================================
 # 3. SIGNAL PROCESSING (FILTERING)

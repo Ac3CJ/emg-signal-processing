@@ -2,9 +2,39 @@ import os
 import scipy.io
 import numpy as np
 import scipy.signal
+import scipy.interpolate
 
 import SignalProcessing 
 import ControllerConfiguration as Config
+
+# ====================================================================================
+# =========================== DATA AUGMENTATION TECHNIQUES =========================== 
+# ====================================================================================
+
+def apply_magnitude_warping(window, sigma=0.2, knot=4):
+    """
+    Applies a smooth, random multiplier curve to the 500ms window.
+    This simulates the natural variation in muscle force without changing the movement.
+    """
+    warp_steps = np.linspace(0, window.shape[1], knot+2)
+    
+    # Generate random multipliers around 1.0 (e.g., 0.8 to 1.2)
+    random_multipliers = np.random.normal(loc=1.0, scale=sigma, size=(window.shape[0], knot+2))
+    
+    warped_window = np.zeros_like(window)
+    for i in range(window.shape[0]):
+        # Create a smooth cubic spline from the random multipliers
+        interpolator = scipy.interpolate.CubicSpline(warp_steps, random_multipliers[i, :])
+        smooth_curve = interpolator(np.arange(window.shape[1]))
+        
+        # Multiply the original signal by the smooth random curve
+        warped_window[i, :] = window[i, :] * smooth_curve
+        
+    return warped_window
+
+# =================================================================================
+# =========================== DATA PREPARATION PIPELINE ===========================
+# =================================================================================
 
 def detect_bursts_and_extract(signal_data, movement_class):
     """
@@ -104,6 +134,12 @@ def load_and_prepare_dataset(base_path='./secondary_data'):
             # 3. Append to our dataset
             for w in active_windows:
                 X_data.append(w)
+                y_targets.append(target_vector)
+
+                X_data.append(apply_magnitude_warping(w, sigma=0.25))
+                y_targets.append(target_vector)
+                
+                X_data.append(apply_magnitude_warping(w, sigma=0.40))
                 y_targets.append(target_vector)
                 
             # explicitly label the inter-burst valleys as absolute zero

@@ -63,8 +63,8 @@ class RealTimeProstheticController:
         self.vis_buffer = np.zeros((Config.NUM_CHANNELS, self.vis_window_size))
         
         # --- NEW: Kinematic History Buffers ---
-        # Stores the last 200 predictions (~12 seconds of history at 62ms increments)
-        self.kinematic_history_len = 200
+        # Stores the last 300 predictions (~18 seconds of history at 62ms increments)
+        self.kinematic_history_len = 300
         self.yaw_history = np.zeros(self.kinematic_history_len)
         self.pitch_history = np.zeros(self.kinematic_history_len)
 

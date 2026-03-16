@@ -16,7 +16,7 @@ NUM_OUTPUTS = 4             # Output DOFs: [Yaw, Pitch, Roll, Elbow]
 # ====================================================================================
 WINDOW_SIZE = 500           # 500 ms window size
 INCREMENT = 62              # 62 ms step size (~16 Hz update rate)
-SMOOTHING_ALPHA = 0.3       # Exponential moving average factor for kinematic output (0.0 to 1.0)
+SMOOTHING_ALPHA = 0.1       # Exponential moving average factor for kinematic output (0.0 to 1.0)
 
 # ====================================================================================
 # 3. SIGNAL PROCESSING (FILTERING)
@@ -31,7 +31,7 @@ FILTER_ORDER = 4            # Butterworth filter order
 # 4. NEURAL NETWORK TRAINING PARAMETERS
 # ====================================================================================
 EPOCHS = 100
-BATCH_SIZE = 64
+BATCH_SIZE = 512
 PATIENCE = 20              # Early stopping patience
 LEARNING_RATE = 0.001
 TEST_SPLIT = 0.2            # 20% of data used for validation

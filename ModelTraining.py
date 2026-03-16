@@ -13,61 +13,115 @@ import ControllerConfiguration as Config
 # ============================== RCNN MODEL DEFINITION ===============================
 # ====================================================================================
 
+class ECABlock(nn.Module):
+    """
+    Efficient Channel Attention (Jiang et al., 2024).
+    Dynamically weights the importance of different feature maps without reducing dimensionality,
+    effectively teaching the network to ignore 'cross-talk' channels during specific movements.
+    """
+    def __init__(self, kernel_size=3):
+        super(ECABlock, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool1d(1)
+        self.conv = nn.Conv1d(1, 1, kernel_size=kernel_size, padding=(kernel_size - 1) // 2, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        # x shape: (Batch, Channels, Seq_Len)
+        y = self.avg_pool(x) # Shape: (Batch, Channels, 1)
+        
+        # ECA applies a 1D conv across the channels
+        y = y.transpose(-1, -2) # Shape: (Batch, 1, Channels)
+        y = self.conv(y)
+        y = y.transpose(-1, -2) # Shape: (Batch, Channels, 1)
+        
+        y = self.sigmoid(y)
+        return x * y.expand_as(x)
+    
+class MultiscaleInception1D(nn.Module):
+    """
+    Multiscale Fusion (Jiang et al., 2024).
+    Applies 3 different kernel sizes simultaneously to capture both rapid spikes
+    and slow muscle holds.
+    """
+    def __init__(self, in_channels, out_channels_per_branch):
+        super(MultiscaleInception1D, self).__init__()
+        # Branch 1: Small temporal window (fast twitches)
+        self.branch1 = nn.Conv1d(in_channels, out_channels_per_branch, kernel_size=3, padding=1)
+        # Branch 2: Medium temporal window
+        self.branch2 = nn.Conv1d(in_channels, out_channels_per_branch, kernel_size=7, padding=3)
+        # Branch 3: Large temporal window (sustained contractions)
+        self.branch3 = nn.Conv1d(in_channels, out_channels_per_branch, kernel_size=11, padding=5)
+        
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        out1 = self.relu(self.branch1(x))
+        out2 = self.relu(self.branch2(x))
+        out3 = self.relu(self.branch3(x))
+        # Concatenate along the channel dimension
+        return torch.cat([out1, out2, out3], dim=1)
+
 class ShoulderRCNN(nn.Module):
     def __init__(self, num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS):
         super(ShoulderRCNN, self).__init__()
         
-        # --- 1. Spatial Feature Extraction (CNN) ---
-        # PyTorch Conv1d expects (Batch, Channels, Sequence_Length)
-        self.conv1 = nn.Conv1d(in_channels=num_channels, out_channels=32, kernel_size=10)
-        self.pool1 = nn.MaxPool1d(kernel_size=2)
+        # --- 1. Multiscale Spatial Feature Extraction (Inception) ---
+        self.inception1 = MultiscaleInception1D(in_channels=num_channels, out_channels_per_branch=16)
+        # CHANGE: Increase pooling from 2 to 5 to aggressively downsample the sequence length
+        self.pool1 = nn.MaxPool1d(kernel_size=5) 
+        
+        self.eca1 = ECABlock(kernel_size=3)
         self.drop1 = nn.Dropout(p=0.2)
         
-        self.conv2 = nn.Conv1d(in_channels=32, out_channels=64, kernel_size=5)
-        self.pool2 = nn.MaxPool1d(kernel_size=2)
+        # Layer 2
+        self.inception2 = MultiscaleInception1D(in_channels=48, out_channels_per_branch=32)
+        # CHANGE: Increase pooling from 2 to 5. 
+        # 500 samples / 5 / 5 = 20 samples. The LSTM now only unrolls 20 times instead of 125!
+        self.pool2 = nn.MaxPool1d(kernel_size=5)
+        self.eca2 = ECABlock(kernel_size=3)
         self.drop2 = nn.Dropout(p=0.2)
         
-        # --- 2. Temporal Sequence Learning (RNN/LSTM) ---
-        # batch_first=True makes input/output tensors structured as (Batch, Seq, Features)
-        self.lstm = nn.LSTM(input_size=64, hidden_size=64, batch_first=True)
-        self.drop_lstm = nn.Dropout(p=0.3)
+        # --- 3. Temporal Sequence Learning (RNN/LSTM) ---
+        # CHANGE: Reduce hidden_size to 64 and num_layers to 1. 
+        # 2 layers with 128 neurons is overkill for predicting 4 physical angles.
+        self.lstm = nn.LSTM(input_size=96, hidden_size=64, num_layers=1, batch_first=True)
         
-        # --- 3. Continuous Regression Output (Dense) ---
+        # --- 4. Kinematic Regression Head ---
+        # Update the FC layer to match the new LSTM hidden_size
         self.fc1 = nn.Linear(64, 32)
         self.relu = nn.ReLU()
-        # No activation function on the final layer for continuous regression
-        self.fc2 = nn.Linear(32, num_outputs) 
+        self.drop3 = nn.Dropout(p=0.3)
+        self.fc2 = nn.Linear(32, num_outputs)
 
     def forward(self, x):
-        # x is originally (Batch, TimeSteps=500, Channels=8)
+        # x shape: (Batch, Channels, Seq_Len)
         
-        # CNN Block 1
-        x = self.relu(self.conv1(x))
+        # Multiscale + Attention Block 1
+        x = self.inception1(x)
         x = self.pool1(x)
+        x = self.eca1(x)
         x = self.drop1(x)
         
-        # CNN Block 2
-        x = self.relu(self.conv2(x))
+        # Multiscale + Attention Block 2
+        x = self.inception2(x)
         x = self.pool2(x)
+        x = self.eca2(x)
         x = self.drop2(x)
         
         # Prepare for LSTM
-        # LSTM wants (Batch, TimeSteps, Features), so we permute back
-        x = x.permute(0, 2, 1)
+        x = x.permute(0, 2, 1) # Shape: (Batch, Seq_Len, Channels)
         
-        # LSTM Block
-        # lstm_out contains all hidden states, (hn, cn) contains the final state
-        lstm_out, (hn, cn) = self.lstm(x)
+        # LSTM Temporal processing
+        lstm_out, _ = self.lstm(x)
+        last_time_step = lstm_out[:, -1, :] 
         
-        # We only care about the very last time step of the LSTM output for our prediction
-        last_time_step = lstm_out[:, -1, :]
-        x = self.drop_lstm(last_time_step)
+        # Regression Mapping
+        out = self.fc1(last_time_step)
+        out = self.relu(out)
+        out = self.drop3(out)
+        out = self.fc2(out)
         
-        # Dense Output Block
-        x = self.relu(self.fc1(x))
-        x = self.fc2(x) # Linear continuous output
-        
-        return x
+        return out
 
 # ====================================================================================
 # ============================== TRAINING PIPELINE ===================================
@@ -104,8 +158,8 @@ def train_model(X_train, y_train, X_val, y_val, batch_size=Config.BATCH_SIZE, ep
     train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
     val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
     
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=Config.BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=Config.BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
     
     # Initialize Model, Loss (MSE for regression), and Optimizer
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

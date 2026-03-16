@@ -28,7 +28,13 @@ BANDPASS_HIGH = 450.0       # Upper cutoff (Nyquist is 500Hz)
 FILTER_ORDER = 4            # Butterworth filter order
 
 # ====================================================================================
-# 4. NEURAL NETWORK TRAINING PARAMETERS
+# 4. DATA AUGMENTATION HYPERPARAMETERS
+# ====================================================================================
+MIXUP_ALPHA = 0.2           # Alpha parameter for the Beta distribution (controls blend intensity)
+MIXUP_RATIO = 0.5           # Ratio of new mixup samples to generate (0.5 = dataset increases by 50%)
+
+# ====================================================================================
+# 5. NEURAL NETWORK TRAINING PARAMETERS
 # ====================================================================================
 EPOCHS = 100
 BATCH_SIZE = 512
@@ -37,19 +43,19 @@ LEARNING_RATE = 0.001
 TEST_SPLIT = 0.2            # 20% of data used for validation
 
 # ====================================================================================
-# 5. NETWORKING & TELEMETRY
+# 6. NETWORKING & TELEMETRY
 # ====================================================================================
 UDP_IP = "127.0.0.1"        # Localhost for virtual environment testing
 UDP_PORT = 5005             # Port listening on the Unity/Virtual Environment side
 
 # ====================================================================================
-# 6. FILE PATHS
+# 7. FILE PATHS
 # ====================================================================================
 BASE_DATA_PATH = './secondary_data'
 MODEL_SAVE_PATH = 'best_shoulder_rcnn.pth'
 
 # ====================================================================================
-# 7. MAPPINGS
+# 8. MAPPINGS
 # ====================================================================================
 # Maps hardware channel index to the physical muscle
 CHANNEL_MAP = {
@@ -93,3 +99,18 @@ CORRUPTED_TRIALS = [
     (6, 5),  # P6, M5: Defective Trapezius Ascendant
     (4, 6),  # P4, M6: Noisy Serratus Anterior
 ]
+
+# CORRUPTED_TRIALS = [
+#     (1, 1),  # P1, M1: Defective Pectoralis Major (Sternal)
+#     (7, 1),  # P7, M1: Defective Latissimus Dorsi
+#     (5, 1),  # P5, M1: Defective Trapezius Ascendant
+#     (2, 2),  # P2, M2: Noisy Latissimus Dorsi
+#     (4, 2),  # P4, M2: Noisy Serratus Anterior
+#     (6, 2),  # P6, M2: Noisy Latissimus Dorsi
+#     (8, 2),  # P8, M2: Defective Latissimus Dorsi
+#     (8, 3),  # P8, M3: Defective Latissimus Dorsi
+#     (4, 4),  # P4, M4: Noisy Everything
+#     (1, 5),  # P1, M5: Defective Serratus Anterior
+#     (6, 5),  # P6, M5: Defective Trapezius Ascendant
+#     (4, 6),  # P4, M6: Noisy Serratus Anterior
+# ]

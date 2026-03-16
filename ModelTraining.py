@@ -75,15 +75,11 @@ class ShoulderRCNN(nn.Module):
         
         # Layer 2
         self.inception2 = MultiscaleInception1D(in_channels=48, out_channels_per_branch=32)
-        # CHANGE: Increase pooling from 2 to 5. 
-        # 500 samples / 5 / 5 = 20 samples. The LSTM now only unrolls 20 times instead of 125!
         self.pool2 = nn.MaxPool1d(kernel_size=5)
         self.eca2 = ECABlock(kernel_size=3)
         self.drop2 = nn.Dropout(p=0.2)
         
         # --- 3. Temporal Sequence Learning (RNN/LSTM) ---
-        # CHANGE: Reduce hidden_size to 64 and num_layers to 1. 
-        # 2 layers with 128 neurons is overkill for predicting 4 physical angles.
         self.lstm = nn.LSTM(input_size=96, hidden_size=64, num_layers=1, batch_first=True)
         
         # --- 4. Kinematic Regression Head ---
@@ -158,8 +154,8 @@ def train_model(X_train, y_train, X_val, y_val, batch_size=Config.BATCH_SIZE, ep
     train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
     val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
     
-    train_loader = DataLoader(train_dataset, batch_size=Config.BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=Config.BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=Config.BATCH_SIZE, shuffle=True, num_workers=0, pin_memory=False)
+    val_loader = DataLoader(val_dataset, batch_size=Config.BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=False)
     
     # Initialize Model, Loss (MSE for regression), and Optimizer
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

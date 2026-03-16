@@ -32,6 +32,40 @@ def apply_magnitude_warping(window, sigma=0.2, knot=4):
         
     return warped_window
 
+def apply_time_domain_mixup(X, y, alpha=0.2, mixup_ratio=0.5):
+    """
+    Applies Time-Domain Mixup to the dataset.
+    Randomly blends pairs of sEMG windows and their corresponding kinematic angles.
+    """
+    if mixup_ratio <= 0.0:
+        return X, y
+
+    num_mixups = int(len(X) * mixup_ratio)
+    print(f"\n[Augmentation] Generating {num_mixups} Time-Domain Mixup samples...")
+
+    # Pre-allocate arrays for speed, use float32 to save RAM
+    mixed_X = np.zeros((num_mixups, X.shape[1], X.shape[2]), dtype=np.float32)
+    mixed_y = np.zeros((num_mixups, y.shape[1]), dtype=np.float32)
+
+    for i in range(num_mixups):
+        # Randomly select two distinct windows from the dataset
+        idx1, idx2 = np.random.choice(len(X), 2, replace=False)
+        
+        # Sample the blending weight (lambda) from a Beta distribution
+        lam = np.random.beta(alpha, alpha)
+        
+        # Create the synthetic blended signal
+        mixed_X[i] = lam * X[idx1] + (1 - lam) * X[idx2]
+        
+        # Create the exact mathematical in-between target angle
+        mixed_y[i] = lam * y[idx1] + (1 - lam) * y[idx2]
+
+    # Concatenate the original data with the new synthetic data
+    X_augmented = np.concatenate((X, mixed_X), axis=0)
+    y_augmented = np.concatenate((y, mixed_y), axis=0)
+
+    return X_augmented, y_augmented
+
 # =================================================================================
 # =========================== DATA PREPARATION PIPELINE ===========================
 # =================================================================================
@@ -151,6 +185,13 @@ def load_and_prepare_dataset(base_path='./secondary_data'):
 
     X_data = np.array(X_data)
     y_targets = np.array(y_targets)
+
+    # --- Apply Time-Domain Mixup ---
+    # After all windows are collected so it can mix movements across different subjects
+    if Config.MIXUP_RATIO > 0:
+        X_data, y_targets = apply_time_domain_mixup(
+            X_data, y_targets, alpha=Config.MIXUP_ALPHA, mixup_ratio=Config.MIXUP_RATIO
+        )
     
     print(f"Dataset generated! Total Windows: {X_data.shape[0]}")
     print(f"X shape: {X_data.shape} | y shape: {y_targets.shape}")

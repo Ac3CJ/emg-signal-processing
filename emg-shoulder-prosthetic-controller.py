@@ -230,17 +230,124 @@ class RealTimeProstheticController:
             self.sock.close()
             print("UDP Socket closed safely.")
 
+def run_fast_validation(model_path, sim_file=None, predefined=False, base_path='./secondary_data'):
+    """
+    Bypasses the GUI timer and processes either a specific file or a predefined list of benchmark files.
+    Saves standardized, wide-format static graphs to a folder.
+    """
+    import scipy.io
+    import matplotlib.pyplot as plt
+    import os
+    import re
+    
+    output_dir = 'kinematic-plots'
+    os.makedirs(output_dir, exist_ok=True)
+
+    print(f"\n[Fast Validation] Loading Model: {model_path}")
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = ShoulderRCNN().to(device)
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.eval()
+
+    # Determine which files to process
+    if predefined:
+        print("[Fast Validation] Running predefined benchmark suite...")
+        # Your specific test list
+        test_cases = [(6, 1), (7, 2), (2, 3), (6, 4), (7, 5), (5, 6), (6, 7), (8, 8)]
+        files_to_process = [os.path.join(base_path, f'Soggetto{p}', f'Movimento{m}.mat') for p, m in test_cases]
+    else:
+        if not sim_file:
+            print("ERROR: No simulation file provided for validation.")
+            return
+        files_to_process = [sim_file]
+
+    for file_path in files_to_process:
+        if not os.path.exists(file_path):
+            print(f"  -> Skipping: File not found at {file_path}")
+            continue
+
+        # Extract Subject (P) and Movement (M) numbers for the title using Regex
+        match = re.search(r'Soggetto(\d+).*Movimento(\d+)', file_path.replace('\\', '/'))
+        if match:
+            subject_id = match.group(1)
+            m = match.group(2)
+            trial_name = f"{m}-kinematics-P{subject_id}M{m}"
+        else:
+            trial_name = "Unknown_Trial"
+
+        print(f"  -> Analyzing {trial_name}...")
+        
+        mat = scipy.io.loadmat(file_path)
+        raw_data = mat['EMGDATA']
+        num_samples = raw_data.shape[1]
+
+        clean_data = np.zeros_like(raw_data, dtype=np.float32)
+        for c in range(Config.NUM_CHANNELS):
+            sig = SignalProcessing.notchFilter(raw_data[c, :], fs=Config.FS, notchFreq=Config.NOTCH_FREQ)
+            sig = SignalProcessing.bandpassFilter(sig, fs=Config.FS, lowCut=Config.BANDPASS_LOW, highCut=Config.BANDPASS_HIGH)
+            clean_data[c, :] = np.abs(sig)
+
+        predictions = []
+        smoothed_pred = np.zeros(Config.NUM_OUTPUTS)
+        window_starts = list(range(0, num_samples - Config.WINDOW_SIZE + 1, Config.INCREMENT))
+        
+        with torch.no_grad():
+            for start in window_starts:
+                window = clean_data[:, start:start+Config.WINDOW_SIZE]
+                window_tensor = torch.tensor(window, dtype=torch.float32).unsqueeze(0).to(device)
+                
+                pred = model(window_tensor).cpu().numpy()[0]
+                smoothed_pred = (Config.SMOOTHING_ALPHA * pred) + ((1.0 - Config.SMOOTHING_ALPHA) * smoothed_pred)
+                predictions.append(smoothed_pred.copy())
+                
+        predictions = np.array(predictions)
+        time_axis = np.array(window_starts) / Config.FS 
+
+        # --- PLOTTING ---
+        plt.figure(figsize=(18, 5)) # Wider X-axis as requested
+        plt.plot(time_axis, predictions[:, 0], label='Yaw (Flex/Ext)', color='tab:blue', linewidth=2)
+        plt.plot(time_axis, predictions[:, 1], label='Pitch (Abd/Add)', color='tab:orange', linewidth=2)
+        plt.plot(time_axis, predictions[:, 2], label='Roll (Int/Ext Rot)', color='tab:green', linewidth=2)
+        plt.plot(time_axis, predictions[:, 3], label='Elbow (Flex)', color='tab:red', linewidth=2)
+        
+        # Lock Y-Axis Limits exactly as requested
+        plt.ylim(-40, 120) 
+        
+        plt.title(trial_name, fontsize=14, fontweight='bold')
+        plt.xlabel("Time (seconds)", fontsize=12)
+        plt.ylabel("Predicted Angle (Degrees)", fontsize=12)
+        plt.legend(loc='upper right')
+        plt.grid(True, linestyle='--', alpha=0.6)
+        plt.tight_layout()
+        
+        # Save exact filename format and close plot
+        save_path = os.path.join(output_dir, f"{trial_name}.png")
+        plt.savefig(save_path, dpi=150)
+        plt.close()
+
+    print(f"\n[Fast Validation] Success! Plots saved to ./{output_dir}/")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Real-Time EMG Prosthetic Controller")
     parser.add_argument('--simulate', action='store_true', help='Generate dummy sEMG data instead of reading hardware')
+    parser.add_argument('--validate', action='store_true', help='Fast-forward process a single sim_file')
+    parser.add_argument('--validate_predefined', action='store_true', help='Run the entire benchmark suite of 8 files')
     parser.add_argument('--model', type=str, default=Config.MODEL_SAVE_PATH, help='Path to the trained PyTorch weights')
-    parser.add_argument('--sim_file', type=str, default='./secondary_data/Soggetto1/Movimento3.mat', help='Specific .mat file to stream during simulation')
+    parser.add_argument('--sim_file', type=str, default='./secondary_data/Soggetto1/Movimento3.mat', help='Specific .mat file to stream')
     
     args = parser.parse_args()
     
-    controller = RealTimeProstheticController(
-        model_path=args.model, 
-        simulate_data=args.simulate,
-        sim_file=args.sim_file
-    )
-    controller.run()
+    if args.validate_predefined:
+        # Run the full list of 8 benchmark tests
+        run_fast_validation(model_path=args.model, predefined=True, base_path=Config.BASE_DATA_PATH)
+    elif args.validate:
+        # Run exactly what you typed in the terminal for a single file
+        run_fast_validation(model_path=args.model, sim_file=args.sim_file, predefined=False)
+    else:
+        # Normal Real-Time GUI Loop
+        controller = RealTimeProstheticController(
+            model_path=args.model, 
+            simulate_data=args.simulate, 
+            sim_file=args.sim_file
+        )
+        controller.run()

@@ -127,6 +127,26 @@ def normaliseSignal(signal, definedMin=None, definedMax=None):
     signal = (signal / maxValue)
     return signal
 
+def tkeo(signal):
+    """
+    Applies the Root Teager-Kaiser Energy Operator (Root-TKEO).
+    Highlights high-frequency bursts while restoring the linear amplitude scale.
+    """
+    y = np.zeros_like(signal)
+    y[1:-1] = signal[1:-1]**2 - (signal[:-2] * signal[2:])
+    
+    # NEW: Take the square root to prevent dynamic range explosion.
+    # We use np.abs() inside because TKEO can occasionally output small negative numbers.
+    return np.sqrt(np.abs(y))
+
+def lowpassFilter(signal, fs=1000.0, cutoff=5.0, order=4):
+    """
+    Applies a Low-Pass Butterworth filter. 
+    Used to extract a smooth linear envelope from rectified/TKEO signals.
+    """
+    b, a = scipy.signal.butter(order, cutoff, fs=fs, btype='low', analog=False)
+    return scipy.signal.filtfilt(b, a, signal)
+
 def filterSignal(signal, savgolWindow=31, savgolPoly=3, baselineWindowSize=301, doWavelet=True):
     """
     Generalized filter for data that removes LF and HF noise.

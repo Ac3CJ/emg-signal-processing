@@ -100,17 +100,29 @@ CORRUPTED_TRIALS = [
     (4, 6),  # P4, M6: Noisy Serratus Anterior
 ]
 
+# New CORRUPTED TRIALS identified during validation (added 2024-06-15, much worse than before)
 # CORRUPTED_TRIALS = [
 #     (1, 1),  # P1, M1: Defective Pectoralis Major (Sternal)
-#     (7, 1),  # P7, M1: Defective Latissimus Dorsi
 #     (5, 1),  # P5, M1: Defective Trapezius Ascendant
+#     (7, 1),  # P7, M1: Defective Latissimus Dorsi
+#     (8, 1),  # P8, M1: Defective Trapezius Descendent
 #     (2, 2),  # P2, M2: Noisy Latissimus Dorsi
 #     (4, 2),  # P4, M2: Noisy Serratus Anterior
 #     (6, 2),  # P6, M2: Noisy Latissimus Dorsi
 #     (8, 2),  # P8, M2: Defective Latissimus Dorsi
+#     (7, 3),  # P7, M3: Noisy Trapezius Ascendant
 #     (8, 3),  # P8, M3: Defective Latissimus Dorsi
+#     (3, 4),  # P3, M4: Noisy Channel 6
 #     (4, 4),  # P4, M4: Noisy Everything
+#     (7, 4),  # P7, M4: Noisy Channel 6
 #     (1, 5),  # P1, M5: Defective Serratus Anterior
 #     (6, 5),  # P6, M5: Defective Trapezius Ascendant
+#     (3, 6),  # P3, M6: Defective Trapezius Ascendant
 #     (4, 6),  # P4, M6: Noisy Serratus Anterior
+#     (6, 6),  # P6, M6: Noisy Trapezius Ascendant
+#     (7, 6),  # P7, M6: Defective Trapezius Ascendant
+#     (5, 7),  # P5, M7: Noisy Pectoralis Major (Clavicular)
+#     (7, 7),  # P7, M7: Defective Trapezius Ascendant
+#     (4, 8),  # P4, M8: Noisy Serratus Anterior
+#     (7, 8),  # P7, M8: Defective Trapezius Ascendant
 # ]

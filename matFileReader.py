@@ -42,13 +42,14 @@ def get_burst_time_windows(signal_data, fs=1000.0, window_length_sec=4.5):
     
     modified_smoothed_energy = np.copy(smoothed_energy)
     modified_smoothed_energy[:cutoff_samples] = steady_state_value
-    # --------------------------------------------------
+    robust_max = np.percentile(modified_smoothed_energy, 95)
     
     # 3. Find Peaks (using the clamped signal)
     peaks, _ = scipy.signal.find_peaks(
         modified_smoothed_energy, 
-        distance=4000,
-        prominence=np.max(modified_smoothed_energy) * 0.15
+        distance=2000,
+        prominence=robust_max*0.05,
+        height=robust_max * 0.60
     )
     
     # Ignore startup hardware spikes
@@ -303,13 +304,13 @@ def get_mat_headers(file_path):
         return None, None
 
 if __name__ == "__main__":
-    RUN_BATCH_GENERATION = True
+    RUN_BATCH_GENERATION = False
 
     if RUN_BATCH_GENERATION:
         batch_generate_all_plots()
     else:
-        file_location = './secondary_data/Soggetto1/'
-        file_name = file_location + 'Movimento6.mat' 
+        file_location = './secondary_data/Soggetto5/'
+        file_name = file_location + 'Movimento5.mat' 
         contents, keys = get_mat_headers(file_name)
 
         if contents and 'EMGDATA' in contents:

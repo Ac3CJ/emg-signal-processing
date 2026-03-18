@@ -25,28 +25,75 @@ CHANNEL_MAP = {
 # ============================== BURST DETECTION LOGIC ===============================
 # ====================================================================================
 
-def get_burst_time_windows(signal_data, fs=1000.0):
+# def get_burst_time_windows(signal_data, fs=1000.0):
+#     """
+#     Mimics the exact extraction logic from DataPreparation.py.
+#     Returns a list of (start_time, end_time) tuples in seconds.
+#     """
+#     # Sum across all 8 channels
+#     summed_energy = np.sum(signal_data, axis=0)
+#     # Smooth with heavy median filter
+#     smoothed_energy = scipy.signal.medfilt(summed_energy, kernel_size=1001)
+#     # Find peaks
+#     peaks, _ = scipy.signal.find_peaks(smoothed_energy, distance=4000, prominence=np.max(smoothed_energy)*0.2)
+    
+#     burst_windows = []
+#     half_hold = int(2.0 * fs) # 2.0 seconds
+#     num_samples = signal_data.shape[1]
+    
+#     for peak in peaks:
+#         start_idx = max(0, peak - half_hold)
+#         end_idx = min(num_samples, peak + half_hold)
+#         # Convert indices to seconds for the plot
+#         burst_windows.append((start_idx / fs, end_idx / fs))
+        
+#     return burst_windows
+
+def get_burst_time_windows(signal_data, fs=1000.0, window_length_sec=4.5):
     """
-    Mimics the exact extraction logic from DataPreparation.py.
-    Returns a list of (start_time, end_time) tuples in seconds.
+    SciPy Peak-Width Onset Detection.
+    Finds peaks, uses SciPy to trace down to the exact rising edge, 
+    and projects a fixed rigid window forward.
     """
-    # Sum across all 8 channels
-    summed_energy = np.sum(signal_data, axis=0)
-    # Smooth with heavy median filter
-    smoothed_energy = scipy.signal.medfilt(summed_energy, kernel_size=1001)
-    # Find peaks
-    peaks, _ = scipy.signal.find_peaks(smoothed_energy, distance=4000, prominence=np.max(smoothed_energy)*0.2)
+    
+    # 1. Root Sum Square for global energy
+    global_energy = np.sqrt(np.sum(signal_data ** 2, axis=0))
+    # global_energy = np.sum(signal_data, axis=0)
+    smoothed_energy = scipy.signal.medfilt(global_energy, kernel_size=1001)
+    
+    # 2. Find peaks (Standard logic)
+    peaks, _ = scipy.signal.find_peaks(
+        smoothed_energy, 
+        distance=4000, 
+        prominence=np.max(smoothed_energy) * 0.10
+    )
+    
+    # FIX: Ignore startup spikes by just throwing out peaks found in the first 1.5 seconds,
+    # rather than creating artificial cliffs by zeroing the data!
+    valid_peaks = [p for p in peaks if p > int(1.5 * fs)]
     
     burst_windows = []
-    half_hold = int(1.5 * fs) # 1.5 seconds
-    num_samples = signal_data.shape[1]
     
-    for peak in peaks:
-        start_idx = max(0, peak - half_hold)
-        end_idx = min(num_samples, peak + half_hold)
-        # Convert indices to seconds for the plot
-        burst_windows.append((start_idx / fs, end_idx / fs))
+    if len(valid_peaks) > 0:
+        # 3. Use SciPy to find the exact rising edge!
+        # rel_height=0.90 tells it to trace 90% of the way down the left slope
+        widths, width_heights, left_ips, right_ips = scipy.signal.peak_widths(
+            smoothed_energy, valid_peaks, rel_height=0.90
+        )
         
+        fixed_window_samples = int(window_length_sec * fs)
+        buffer_samples = int(0.2 * fs) # Pull back 200ms to grab the baseline just before the flex
+        
+        for i in range(len(valid_peaks)):
+            # left_ips[i] holds the exact index of the rising edge for this peak
+            rising_edge_idx = int(left_ips[i])
+            
+            # Anchor to the rising edge, pull back slightly, and rigidly project forward
+            start_idx = max(0, rising_edge_idx - buffer_samples)
+            end_idx = min(signal_data.shape[1], start_idx + fixed_window_samples)
+            
+            burst_windows.append((start_idx / fs, end_idx / fs))
+            
     return burst_windows
 
 # ====================================================================================
@@ -190,7 +237,7 @@ def get_mat_headers(file_path):
         return None, None
 
 if __name__ == "__main__":
-    file_location = './secondary_data/Soggetto6/'
+    file_location = './secondary_data/Soggetto3/'
     file_name = file_location + 'Movimento1.mat' 
     contents, keys = get_mat_headers(file_name)
 

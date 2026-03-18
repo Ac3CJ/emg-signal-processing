@@ -67,9 +67,7 @@ class ShoulderRCNN(nn.Module):
         
         # --- 1. Multiscale Spatial Feature Extraction (Inception) ---
         self.inception1 = MultiscaleInception1D(in_channels=num_channels, out_channels_per_branch=16)
-        # CHANGE: Increase pooling from 2 to 5 to aggressively downsample the sequence length
         self.pool1 = nn.MaxPool1d(kernel_size=5) 
-        
         self.eca1 = ECABlock(kernel_size=3)
         self.drop1 = nn.Dropout(p=0.2)
         
@@ -83,7 +81,6 @@ class ShoulderRCNN(nn.Module):
         self.lstm = nn.LSTM(input_size=96, hidden_size=64, num_layers=1, batch_first=True)
         
         # --- 4. Kinematic Regression Head ---
-        # Update the FC layer to match the new LSTM hidden_size
         self.fc1 = nn.Linear(64, 32)
         self.relu = nn.ReLU()
         self.drop3 = nn.Dropout(p=0.3)

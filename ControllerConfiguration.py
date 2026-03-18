@@ -31,7 +31,7 @@ FILTER_ORDER = 4            # Butterworth filter order
 # 4. DATA AUGMENTATION HYPERPARAMETERS
 # ====================================================================================
 MIXUP_ALPHA = 0.2           # Alpha parameter for the Beta distribution (controls blend intensity)
-MIXUP_RATIO = 0.5           # Ratio of new mixup samples to generate (0.5 = dataset increases by 50%)
+MIXUP_RATIO = 0.75           # Ratio of new mixup samples to generate (0.5 = dataset increases by 50%)
 
 # ====================================================================================
 # 5. NEURAL NETWORK TRAINING PARAMETERS

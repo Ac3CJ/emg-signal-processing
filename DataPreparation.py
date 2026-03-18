@@ -26,14 +26,14 @@ def apply_magnitude_warping(window, sigma=0.2, knot=4):
 
 def apply_phase_aligned_mixup(bursts, targets, alpha=0.2, mixup_ratio=0.5):
     """
-    Applies Mixup to the FULL 3-second bursts before they are windowed.
+    Applies Mixup to the FULL bursts before they are windowed.
     This ensures the ramp-up and ramp-down phases of different movements align perfectly.
     """
     if mixup_ratio <= 0.0 or len(bursts) == 0:
         return bursts, targets
 
     num_mixups = int(len(bursts) * mixup_ratio)
-    print(f"\n[Augmentation] Generating {num_mixups} Phase-Aligned 3-Second Mixup bursts...")
+    print(f"\n[Augmentation] Generating {num_mixups} Phase-Aligned Mixup bursts...")
     
     mixed_bursts = []
     mixed_targets = []
@@ -43,7 +43,7 @@ def apply_phase_aligned_mixup(bursts, targets, alpha=0.2, mixup_ratio=0.5):
         idx1, idx2 = np.random.choice(len(bursts), 2, replace=False)
         lam = np.random.beta(alpha, alpha)
         
-        # Mix the entire 3-second arrays
+        # Mix the entire arrays
         new_burst = (lam * bursts[idx1]) + ((1 - lam) * bursts[idx2])
         new_target = (lam * targets[idx1]) + ((1 - lam) * targets[idx2])
         
@@ -57,44 +57,78 @@ def apply_phase_aligned_mixup(bursts, targets, alpha=0.2, mixup_ratio=0.5):
 # ============================== EXTRACTION PIPELINE =================================
 # ====================================================================================
 
-def extract_bursts_and_valleys(signal_data, movement_class):
+def extract_bursts_and_valleys(classic_data, tkeo_data, movement_class, fs=Config.FS, window_length_sec=4.5):
     """
-    Extracts the full 3-second active holds AND the resting valleys between them.
-    Does NOT slice them into windows yet.
+    Split Pipeline Extraction:
+    Runs the burst detection math on `tkeo_data`, but extracts the actual training 
+    features and resting valleys from `classic_data`.
     """
-    num_samples = signal_data.shape[1]
+    num_samples = classic_data.shape[1]
     active_bursts = []
     rest_valleys = []
     
+    fixed_window_samples = int(window_length_sec * fs)
+    
+    # Rest Class handles fixed splitting natively
     if movement_class == 9:
-        for start in range(0, num_samples - 3000, 3000):
-            rest_valleys.append(signal_data[:, start:start+3000])
+        for start in range(0, num_samples - fixed_window_samples, fixed_window_samples):
+            rest_valleys.append(classic_data[:, start:start+fixed_window_samples])
         return active_bursts, rest_valleys
 
-    summed_energy = np.sum(signal_data, axis=0)
-    smoothed_energy = scipy.signal.medfilt(summed_energy, kernel_size=1001)
-    peaks, _ = scipy.signal.find_peaks(smoothed_energy, distance=4000, prominence=np.max(smoothed_energy)*0.2)
+    # ==================== TRACK A: MATH (TKEO DATA) ====================
+    global_energy = np.sum(tkeo_data, axis=0)
+    smoothed_energy = scipy.signal.medfilt(global_energy, kernel_size=501)
     
-    half_hold = int(1.5 * Config.FS)
-    last_end_idx = 0
+    # Edge Clamping
+    cutoff_samples = int(0.5 * fs)
+    steady_state_value = smoothed_energy[cutoff_samples]
     
-    for peak in peaks:
-        start_idx = peak - half_hold
-        end_idx = peak + half_hold
+    modified_smoothed_energy = np.copy(smoothed_energy)
+    modified_smoothed_energy[:cutoff_samples] = steady_state_value
+    robust_max = np.percentile(modified_smoothed_energy, 95)
+    
+    peaks, _ = scipy.signal.find_peaks(
+        modified_smoothed_energy, 
+        distance=2000,
+        prominence=robust_max * 0.05,
+        height=robust_max * 0.60
+    )
+    
+    valid_peaks = [p for p in peaks if p > int(1.5 * fs)]
+    
+    if len(valid_peaks) > 0:
+        widths, width_heights, left_ips, right_ips = scipy.signal.peak_widths(
+            modified_smoothed_energy, valid_peaks, rel_height=0.90
+        )
         
-        if start_idx < 0 or end_idx > num_samples:
-            continue 
+        buffer_samples = int(0.2 * fs)
+        last_end_idx = 0
+        
+        for i in range(len(valid_peaks)):
+            rising_edge_idx = int(left_ips[i])
+            start_idx = max(0, rising_edge_idx - buffer_samples)
             
-        valley_start = last_end_idx + 500
-        valley_end = start_idx - 500
-        if valley_end - valley_start > Config.WINDOW_SIZE:
-            rest_valleys.append(signal_data[:, valley_start:valley_end])
-
-        burst_data = signal_data[:, start_idx:end_idx]
-        if burst_data.shape[1] == half_hold * 2:  # Ensure exactly 3000 samples
-            active_bursts.append(burst_data)
+            # Prevent overlap collision
+            if start_idx < last_end_idx:
+                continue
                 
-        last_end_idx = end_idx
+            end_idx = min(num_samples, start_idx + fixed_window_samples)
+            
+            # ==================== TRACK B: PAYLOAD (CLASSIC DATA) ====================
+            
+            # 1. Extract the Rest Valley BEFORE this burst
+            # (Buffer by 500 samples on each side to ensure no overlap with active muscles)
+            valley_start = last_end_idx + 500
+            valley_end = start_idx - 500
+            if valley_end - valley_start > Config.WINDOW_SIZE:
+                rest_valleys.append(classic_data[:, valley_start:valley_end])
+                
+            # 2. Extract the Active Burst
+            burst_data = classic_data[:, start_idx:end_idx]
+            if burst_data.shape[1] == fixed_window_samples: # Ensure exactly 4.5s
+                active_bursts.append(burst_data)
+                
+            last_end_idx = end_idx
             
     return active_bursts, rest_valleys
 
@@ -115,7 +149,7 @@ def load_and_prepare_dataset(base_path='./secondary_data'):
     
     print("Beginning Phase-Aligned data extraction...")
     
-    # 1. Collect all raw 3-second bursts
+    # 1. Collect all raw bursts via the Split Pipeline
     for p in range(1, 9):       
         for m in range(1, 10):  
             # Handle Blacklist
@@ -129,13 +163,28 @@ def load_and_prepare_dataset(base_path='./secondary_data'):
             if 'EMGDATA' not in mat: continue
             raw_data = mat['EMGDATA']
             
-            clean_data = np.zeros_like(raw_data, dtype=np.float32)
-            for c in range(Config.NUM_CHANNELS):
-                sig = SignalProcessing.notchFilter(raw_data[c, :], fs=Config.FS, notchFreq=Config.NOTCH_FREQ)
-                sig = SignalProcessing.bandpassFilter(sig, fs=Config.FS, lowCut=Config.BANDPASS_LOW, highCut=Config.BANDPASS_HIGH)
-                clean_data[c, :] = np.abs(sig) 
+            classic_data = np.zeros_like(raw_data, dtype=np.float32)
+            tkeo_data = np.zeros_like(raw_data, dtype=np.float32)
             
-            active_bursts, rest_valleys = extract_bursts_and_valleys(clean_data, movement_class=m)
+            for c in range(Config.NUM_CHANNELS):
+                # Base Conditioning
+                notch = SignalProcessing.notchFilter(raw_data[c, :], fs=Config.FS, notchFreq=Config.NOTCH_FREQ)
+                band = SignalProcessing.bandpassFilter(notch, fs=Config.FS, lowCut=Config.BANDPASS_LOW, highCut=Config.BANDPASS_HIGH)
+                
+                # Track B: Classic Features
+                rectified_classic = np.abs(band)
+                classic_data[c, :] = rectified_classic
+                
+                # Track A: TKEO Envelope Generation
+                teager = SignalProcessing.tkeo(band)
+                rectified_teager = np.abs(teager)
+                envelope = SignalProcessing.lowpassFilter(rectified_teager, fs=Config.FS, cutoff=5.0)
+                
+                # Normalize TKEO so the math thresholding works correctly
+                tkeo_max = np.percentile(envelope, 99.9) + 1e-6
+                tkeo_data[c, :] = np.clip(envelope / tkeo_max, 0.0, 1.0)
+            
+            active_bursts, rest_valleys = extract_bursts_and_valleys(classic_data, tkeo_data, movement_class=m)
             target_vector = np.array(Config.TARGET_MAPPING[m], dtype=np.float32)
             
             for b in active_bursts:
@@ -145,7 +194,7 @@ def load_and_prepare_dataset(base_path='./secondary_data'):
                 
         print(f"Processed Subject {p}...")
 
-    # 2. Apply Phase-Aligned Mixup on the full 3-second arrays
+    # 2. Apply Phase-Aligned Mixup on the full 4.5-second arrays
     if hasattr(Config, 'MIXUP_RATIO') and Config.MIXUP_RATIO > 0:
         all_active_bursts, all_active_targets = apply_phase_aligned_mixup(
             all_active_bursts, all_active_targets, 

@@ -78,13 +78,13 @@ class WindowViewer:
 # ====================================================================================
 class ParticipantOverlayViewer:
     def __init__(self, participant_id, movement_data_dict):
-        """Overlays the first 3-second burst of all 8 movements for a single participant."""
+        """Overlays two consecutive bursts (and the rest between) of all 8 movements."""
         self.fig, self.axes = plt.subplots(Config.NUM_CHANNELS, 1, figsize=(14, 9), sharex=True, sharey='row')
         self.fig.canvas.manager.set_window_title(f'Overlay Validation - Subject {participant_id}')
         
         # Make room for the checkboxes on the bottom right
         plt.subplots_adjust(bottom=0.1, right=0.85, top=0.95, hspace=0.1)
-        self.fig.suptitle(f'Cross-Talk Investigation: Subject {participant_id}', fontsize=16, fontweight='bold')
+        self.fig.suptitle(f'Cross-Talk Investigation (2 Bursts): Subject {participant_id}', fontsize=16, fontweight='bold')
 
         self.lines_by_movement = {} 
         # Distinct colors for M1 through M8
@@ -99,14 +99,20 @@ class ParticipantOverlayViewer:
             ax.grid(True, linestyle='--', alpha=0.5)
             if ch < Config.NUM_CHANNELS - 1:
                 ax.set_xticks([])
+            else:
+                ax.set_xlabel("Time (seconds)", fontsize=10, fontweight='bold')
 
         # Plot the data
         for idx, m in enumerate(range(1, 9)):
             self.lines_by_movement[m] = []
             if m in movement_data_dict and movement_data_dict[m] is not None:
-                data = movement_data_dict[m] # Shape (8, 3000)
+                data = movement_data_dict[m] # Shape (8, dynamic_length)
+                
+                # Create a proper time axis in seconds so varying lengths align perfectly at t=0
+                time_axis = np.arange(data.shape[1]) / Config.FS
+                
                 for ch in range(Config.NUM_CHANNELS):
-                    line, = self.axes[ch].plot(data[ch], color=colors[idx], label=f"M{m}", alpha=0.85, linewidth=1.5)
+                    line, = self.axes[ch].plot(time_axis, data[ch], color=colors[idx], label=f"M{m}", alpha=0.85, linewidth=1.5)
                     self.lines_by_movement[m].append(line)
 
         # Create the CheckButtons at the bottom right
@@ -130,7 +136,7 @@ class ParticipantOverlayViewer:
         self.fig.canvas.draw_idle()
 
 def extract_representative_burst(p, m):
-    """Hunts down the first 3-second burst of a specific trial for alignment."""
+    """Hunts down the first TWO bursts of a specific trial, including the rest period between them."""
     file_path = os.path.join(Config.BASE_DATA_PATH, f'Soggetto{p}', f'Movimento{m}.mat')
     if not os.path.exists(file_path): return None
     if (p, m) in Config.CORRUPTED_TRIALS: return None
@@ -150,19 +156,17 @@ def extract_representative_burst(p, m):
     
     if len(peaks) == 0: return None
     
-    # Grab 1.5s before and after the very first peak
+    # Grab 1.5s before the FIRST peak, and 1.5s after the SECOND peak
     first_peak = peaks[0]
+    
+    # If the file somehow only has 1 peak, just use the first peak for both
+    second_peak = peaks[1] if len(peaks) >= 2 else peaks[0] 
+    
     half_hold = int(1.5 * Config.FS)
     start_idx = max(0, first_peak - half_hold)
-    end_idx = min(clean_data.shape[1], first_peak + half_hold)
+    end_idx = min(clean_data.shape[1], second_peak + half_hold)
     
     burst = clean_data[:, start_idx:end_idx]
-    
-    # Pad with zeros if the peak was too close to the start/end of the file
-    if burst.shape[1] < half_hold * 2:
-        pad_width = (half_hold * 2) - burst.shape[1]
-        burst = np.pad(burst, ((0,0), (0, pad_width)), mode='constant')
-        
     return burst
 
 # ====================================================================================

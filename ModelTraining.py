@@ -80,11 +80,16 @@ class ShoulderRCNN(nn.Module):
         # --- 3. Temporal Sequence Learning (RNN/LSTM) ---
         self.lstm = nn.LSTM(input_size=96, hidden_size=64, num_layers=1, batch_first=True)
         
-        # --- 4. Kinematic Regression Head ---
+        # --- 4. Kinematic Regression Head (DECOUPLED HEADS) ---
         self.fc1 = nn.Linear(64, 32)
         self.relu = nn.ReLU()
         self.drop3 = nn.Dropout(p=0.3)
-        self.fc2 = nn.Linear(32, num_outputs)
+        
+        # Four completely independent linear layers for each degree of freedom
+        self.fc_yaw = nn.Linear(32, 1)
+        self.fc_pitch = nn.Linear(32, 1)
+        self.fc_roll = nn.Linear(32, 1)
+        self.fc_elbow = nn.Linear(32, 1)
 
     def forward(self, x):
         # x shape: (Batch, Channels, Seq_Len)
@@ -108,13 +113,19 @@ class ShoulderRCNN(nn.Module):
         lstm_out, _ = self.lstm(x)
         last_time_step = lstm_out[:, -1, :] 
         
-        # Regression Mapping
+        # Pass through the shared dense layer
         out = self.fc1(last_time_step)
         out = self.relu(out)
         out = self.drop3(out)
-        out = self.fc2(out)
         
-        return out
+        # Pass through the independent, decoupled heads
+        yaw = self.fc_yaw(out)
+        pitch = self.fc_pitch(out)
+        roll = self.fc_roll(out)
+        elbow = self.fc_elbow(out)
+        
+        # Concatenate them back together to match the (Batch, 4) target tensor shape
+        return torch.cat([yaw, pitch, roll, elbow], dim=1)
 
 # ====================================================================================
 # ============================== TRAINING PIPELINE ===================================
@@ -255,7 +266,6 @@ if __name__ == "__main__":
             X_full, y_full, test_size=Config.TEST_SPLIT, random_state=42, shuffle=True
         )
         
-        # --- NEW: CLASS DISTRIBUTION LOGGING ---
         print(f"\n[{'-'*10} DATASET DISTRIBUTION {'-'*10}]")
         print(f"{'Class Name':<18} | {'Train':<8} | {'Validation':<8}")
         print("-" * 42)
@@ -278,9 +288,8 @@ if __name__ == "__main__":
             
         print("-" * 42)
         print(f"{'TOTAL':<18} | {total_train:<8} | {total_val:<8}\n")
-        # ---------------------------------------
         
-        print(f"Training on {len(X_train)} total samples, Validating on {len(X_val)} total samples...")
+        print(f"Training on {len(X_train)} samples, Validating on {len(X_val)} samples...")
         
-        # 3. Train the model for real (using epochs=50 and batch_size=64)
+        # 3. Train the model for real (using epochs=50 and patience=10)
         trained_model = train_model(X_train, y_train, X_val, y_val, epochs=50, batch_size=64)

@@ -255,7 +255,32 @@ if __name__ == "__main__":
             X_full, y_full, test_size=Config.TEST_SPLIT, random_state=42, shuffle=True
         )
         
-        print(f"Training on {len(X_train)} samples, Validating on {len(X_val)} samples...")
+        # --- NEW: CLASS DISTRIBUTION LOGGING ---
+        print(f"\n[{'-'*10} DATASET DISTRIBUTION {'-'*10}]")
+        print(f"{'Class Name':<18} | {'Train':<8} | {'Validation':<8}")
+        print("-" * 42)
         
-        # 3. Train the model for real (using epochs=50 and patience=10)
+        total_train = 0
+        total_val = 0
+        
+        for class_idx, target_angles in Config.TARGET_MAPPING.items():
+            target_vec = np.array(target_angles, dtype=np.float32)
+            
+            # Count how many rows exactly match this target vector
+            train_count = np.sum(np.all(y_train == target_vec, axis=1))
+            val_count = np.sum(np.all(y_val == target_vec, axis=1))
+            
+            total_train += train_count
+            total_val += val_count
+            
+            class_name = f"Movement {class_idx}" if class_idx != 9 else "Rest (Class 9)"
+            print(f"{class_name:<18} | {train_count:<8} | {val_count:<8}")
+            
+        print("-" * 42)
+        print(f"{'TOTAL':<18} | {total_train:<8} | {total_val:<8}\n")
+        # ---------------------------------------
+        
+        print(f"Training on {len(X_train)} total samples, Validating on {len(X_val)} total samples...")
+        
+        # 3. Train the model for real (using epochs=50 and batch_size=64)
         trained_model = train_model(X_train, y_train, X_val, y_val, epochs=50, batch_size=64)

@@ -24,34 +24,31 @@ def apply_magnitude_warping(window, sigma=0.2, knot=4):
         
     return warped_window
 
-def apply_phase_aligned_mixup(bursts, targets, alpha=0.2, mixup_ratio=0.5):
+def apply_mixup(data_arrays, targets, alpha=0.2, mixup_ratio=0.5):
     """
-    Applies Mixup to the FULL bursts before they are windowed.
-    This ensures the ramp-up and ramp-down phases of different movements align perfectly.
+    Applies Mixup augmentation. 
+    Works on both full Phase-Aligned bursts AND 500ms Rest windows.
     """
-    if mixup_ratio <= 0.0 or len(bursts) == 0:
-        return bursts, targets
+    if mixup_ratio <= 0.0 or len(data_arrays) == 0:
+        return data_arrays, targets
 
-    num_mixups = int(len(bursts) * mixup_ratio)
-    print(f"\n[Augmentation] Generating {num_mixups} Phase-Aligned Mixup bursts...")
+    num_mixups = int(len(data_arrays) * mixup_ratio)
+    print(f"\n[Augmentation] Generating {num_mixups} Mixup arrays...")
     
-    mixed_bursts = []
+    mixed_arrays = []
     mixed_targets = []
     
     for _ in range(num_mixups):
-        # Pick two completely random full bursts
-        idx1, idx2 = np.random.choice(len(bursts), 2, replace=False)
+        idx1, idx2 = np.random.choice(len(data_arrays), 2, replace=False)
         lam = np.random.beta(alpha, alpha)
         
-        # Mix the entire arrays
-        new_burst = (lam * bursts[idx1]) + ((1 - lam) * bursts[idx2])
+        new_array = (lam * data_arrays[idx1]) + ((1 - lam) * data_arrays[idx2])
         new_target = (lam * targets[idx1]) + ((1 - lam) * targets[idx2])
         
-        mixed_bursts.append(new_burst.astype(np.float32))
+        mixed_arrays.append(new_array.astype(np.float32))
         mixed_targets.append(new_target.astype(np.float32))
         
-    # Append the synthetic bursts to the original lists
-    return bursts + mixed_bursts, targets + mixed_targets
+    return data_arrays + mixed_arrays, targets + mixed_targets
 
 # ====================================================================================
 # ============================== EXTRACTION PIPELINE =================================
@@ -117,7 +114,6 @@ def extract_bursts_and_valleys(classic_data, tkeo_data, movement_class, fs=Confi
             # ==================== TRACK B: PAYLOAD (CLASSIC DATA) ====================
             
             # 1. Extract the Rest Valley BEFORE this burst
-            # (Buffer by 500 samples on each side to ensure no overlap with active muscles)
             valley_start = last_end_idx + 500
             valley_end = start_idx - 500
             if valley_end - valley_start > Config.WINDOW_SIZE:
@@ -125,7 +121,7 @@ def extract_bursts_and_valleys(classic_data, tkeo_data, movement_class, fs=Confi
                 
             # 2. Extract the Active Burst
             burst_data = classic_data[:, start_idx:end_idx]
-            if burst_data.shape[1] == fixed_window_samples: # Ensure exactly 4.5s
+            if burst_data.shape[1] == fixed_window_samples: 
                 active_bursts.append(burst_data)
                 
             last_end_idx = end_idx
@@ -147,12 +143,11 @@ def load_and_prepare_dataset(base_path='./secondary_data'):
     all_rest_valleys = []
     REST_VECTOR = np.array(Config.TARGET_MAPPING[9], dtype=np.float32)
     
-    print("Beginning Phase-Aligned data extraction...")
+    print("Beginning Split-Pipeline data extraction...")
     
     # 1. Collect all raw bursts via the Split Pipeline
     for p in range(1, 9):       
         for m in range(1, 10):  
-            # Handle Blacklist
             if hasattr(Config, 'CORRUPTED_TRIALS') and (p, m) in Config.CORRUPTED_TRIALS:
                 continue
                 
@@ -167,20 +162,16 @@ def load_and_prepare_dataset(base_path='./secondary_data'):
             tkeo_data = np.zeros_like(raw_data, dtype=np.float32)
             
             for c in range(Config.NUM_CHANNELS):
-                # Base Conditioning
                 notch = SignalProcessing.notchFilter(raw_data[c, :], fs=Config.FS, notchFreq=Config.NOTCH_FREQ)
                 band = SignalProcessing.bandpassFilter(notch, fs=Config.FS, lowCut=Config.BANDPASS_LOW, highCut=Config.BANDPASS_HIGH)
                 
-                # Track B: Classic Features
                 rectified_classic = np.abs(band)
                 classic_data[c, :] = rectified_classic
                 
-                # Track A: TKEO Envelope Generation
                 teager = SignalProcessing.tkeo(band)
                 rectified_teager = np.abs(teager)
                 envelope = SignalProcessing.lowpassFilter(rectified_teager, fs=Config.FS, cutoff=5.0)
                 
-                # Normalize TKEO so the math thresholding works correctly
                 tkeo_max = np.percentile(envelope, 99.9) + 1e-6
                 tkeo_data[c, :] = np.clip(envelope / tkeo_max, 0.0, 1.0)
             
@@ -194,9 +185,9 @@ def load_and_prepare_dataset(base_path='./secondary_data'):
                 
         print(f"Processed Subject {p}...")
 
-    # 2. Apply Phase-Aligned Mixup on the full 4.5-second arrays
+    # 2. Apply Mixup to the full 4.5-second Active arrays
     if hasattr(Config, 'MIXUP_RATIO') and Config.MIXUP_RATIO > 0:
-        all_active_bursts, all_active_targets = apply_phase_aligned_mixup(
+        all_active_bursts, all_active_targets = apply_mixup(
             all_active_bursts, all_active_targets, 
             alpha=Config.MIXUP_ALPHA, mixup_ratio=Config.MIXUP_RATIO
         )
@@ -204,26 +195,48 @@ def load_and_prepare_dataset(base_path='./secondary_data'):
     X_data = []
     y_targets = []
     
-    # 3. Slice the bursts into 500ms windows and apply Magnitude Warping
-    print("Slicing arrays and applying Magnitude Warping...")
+    # 3. Slice Active bursts into 500ms windows and apply Magnitude Warping
+    print("Slicing Active arrays and applying Magnitude Warping...")
     for burst, target in zip(all_active_bursts, all_active_targets):
         windows = slice_into_windows(burst, Config.INCREMENT, Config.WINDOW_SIZE)
         for w in windows:
             X_data.append(w)
             y_targets.append(target)
             
-            # Warp the windows
             X_data.append(apply_magnitude_warping(w, sigma=0.25))
             y_targets.append(target)
             X_data.append(apply_magnitude_warping(w, sigma=0.40))
             y_targets.append(target)
             
-    # 4. Slice the inter-burst valleys (Rest states)
+    # 4. Process Rest Valleys: Slice first, then augment
+    print("Slicing Rest Valleys and applying Augmentation...")
+    rest_windows_unaugmented = []
+    rest_targets_unaugmented = []
+    
     for valley in all_rest_valleys:
         windows = slice_into_windows(valley, Config.INCREMENT, Config.WINDOW_SIZE)
         for w in windows:
-            X_data.append(w)
-            y_targets.append(REST_VECTOR)
+            rest_windows_unaugmented.append(w)
+            rest_targets_unaugmented.append(REST_VECTOR)
+
+    # Mixup on Rest Windows
+    if hasattr(Config, 'REST_MIXUP_RATIO') and Config.REST_MIXUP_RATIO > 0:
+        all_rest_windows, all_rest_targets = apply_mixup(
+            rest_windows_unaugmented, rest_targets_unaugmented, 
+            alpha=Config.REST_MIXUP_ALPHA, mixup_ratio=Config.REST_MIXUP_RATIO
+        )
+    else:
+        all_rest_windows, all_rest_targets = rest_windows_unaugmented, rest_targets_unaugmented
+
+    # Magnitude Warping on Rest Windows
+    for w, target in zip(all_rest_windows, all_rest_targets):
+        X_data.append(w)
+        y_targets.append(target)
+        
+        X_data.append(apply_magnitude_warping(w, sigma=0.25))
+        y_targets.append(target)
+        X_data.append(apply_magnitude_warping(w, sigma=0.40))
+        y_targets.append(target)
 
     X_data = np.array(X_data, dtype=np.float32)
     y_targets = np.array(y_targets, dtype=np.float32)
@@ -232,5 +245,4 @@ def load_and_prepare_dataset(base_path='./secondary_data'):
     return X_data, y_targets
 
 if __name__ == "__main__":
-    # Test the extraction
     X, y = load_and_prepare_dataset()

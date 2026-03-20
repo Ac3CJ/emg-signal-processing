@@ -140,13 +140,13 @@ class ShoulderRCNN(nn.Module):
         self.inception1 = MultiscaleInception1D(in_channels=num_channels, out_channels_per_branch=16)
         self.pool1 = nn.MaxPool1d(kernel_size=5) 
         self.eca1 = ECABlock(kernel_size=3)
-        self.drop1 = nn.Dropout1d(p=0.2)
+        self.drop1 = nn.Dropout(p=0.2)
         
         # Layer 2
         self.inception2 = MultiscaleInception1D(in_channels=48, out_channels_per_branch=32)
         self.pool2 = nn.MaxPool1d(kernel_size=5)
         self.eca2 = ECABlock(kernel_size=3)
-        self.drop2 = nn.Dropout1d(p=0.2)
+        self.drop2 = nn.Dropout(p=0.2)
         
         # --- 3. Temporal Sequence Learning (RNN/LSTM) ---
         self.lstm = nn.LSTM(input_size=96, hidden_size=64, num_layers=1, batch_first=True)

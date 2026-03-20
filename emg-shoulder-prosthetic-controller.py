@@ -363,11 +363,12 @@ if __name__ == "__main__":
     
     if args.validate_ensemble:
         run_ensemble_validation(model_path=args.model, base_path=Config.BASE_DATA_PATH)
-    elif args.validate_predefined:
+    if args.validate_predefined:
         run_fast_validation(model_path=args.model, predefined=True, base_path=Config.BASE_DATA_PATH)
-    elif args.validate:
+    if args.validate:
         run_fast_validation(model_path=args.model, sim_file=args.sim_file, predefined=False)
-    else:
+        
+    if not (args.validate or args.validate_predefined or args.validate_ensemble):
         controller = RealTimeProstheticController(
             model_path=args.model, 
             simulate_data=args.simulate, 

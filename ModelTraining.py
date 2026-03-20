@@ -96,6 +96,42 @@ class MultiscaleInception1D(nn.Module):
         # Concatenate along the channel dimension
         return torch.cat([out1, out2, out3], dim=1)
 
+class TemporalAttention(nn.Module):
+    """
+    Temporal Attention Mechanism for weighted sequence aggregation.
+    Takes the full LSTM output sequence and learns which timesteps are most important.
+    Outputs a context vector that dynamically aggregates information across the sequence.
+    """
+    def __init__(self, hidden_size):
+        super(TemporalAttention, self).__init__()
+        # Linear layer to compute attention scores for each timestep
+        self.attention_layer = nn.Linear(hidden_size, 1)
+        self.softmax = nn.Softmax(dim=1)
+    
+    def forward(self, lstm_out):
+        # lstm_out shape: (Batch, Seq_Len, Hidden_Size)
+        
+        # Calculate attention scores: (Batch, Seq_Len, 1)
+        attention_scores = self.attention_layer(lstm_out)
+        
+        # Squeeze to (Batch, Seq_Len)
+        attention_scores = attention_scores.squeeze(-1)
+        
+        # Apply softmax to get attention weights across the sequence
+        attention_weights = self.softmax(attention_scores)
+        
+        # Reshape for broadcasting: (Batch, Seq_Len, 1)
+        attention_weights = attention_weights.unsqueeze(-1)
+        
+        # Apply attention weights to each timestep
+        # (Batch, Seq_Len, Hidden_Size) * (Batch, Seq_Len, 1) -> (Batch, Seq_Len, Hidden_Size)
+        weighted_out = lstm_out * attention_weights
+        
+        # Sum across time dimension to get context vector
+        context_vector = weighted_out.sum(dim=1)  # (Batch, Hidden_Size)
+        
+        return context_vector
+
 class ShoulderRCNN(nn.Module):
     def __init__(self, num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS):
         super(ShoulderRCNN, self).__init__()
@@ -114,6 +150,9 @@ class ShoulderRCNN(nn.Module):
         
         # --- 3. Temporal Sequence Learning (RNN/LSTM) ---
         self.lstm = nn.LSTM(input_size=96, hidden_size=64, num_layers=1, batch_first=True)
+        
+        # --- 3.5. Temporal Attention Mechanism ---
+        self.temporal_attention = TemporalAttention(hidden_size=64)
         
         # --- 4. Kinematic Regression Head (DECOUPLED HEADS) ---
         self.fc1 = nn.Linear(64, 32)
@@ -146,10 +185,12 @@ class ShoulderRCNN(nn.Module):
         
         # LSTM Temporal processing
         lstm_out, _ = self.lstm(x)
-        last_time_step = lstm_out[:, -1, :] 
+        
+        # Temporal Attention Mechanism: Dynamically weight the sequence
+        context_vector = self.temporal_attention(lstm_out)
         
         # Pass through the shared dense layer
-        out = self.fc1(last_time_step)
+        out = self.fc1(context_vector)
         out = self.relu(out)
         out = self.drop3(out)
         

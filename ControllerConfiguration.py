@@ -40,7 +40,7 @@ REST_MIXUP_RATIO = 0.10           # Ratio of new mixup samples to generate (0.5 
 # 5. NEURAL NETWORK TRAINING PARAMETERS
 # ====================================================================================
 EPOCHS = 100
-BATCH_SIZE = 512
+BATCH_SIZE = 1024
 PATIENCE = 20              # Early stopping patience
 LEARNING_RATE = 0.001
 TEST_SPLIT = 0.2            # 20% of data used for validation

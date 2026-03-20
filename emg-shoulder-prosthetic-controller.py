@@ -261,7 +261,11 @@ def run_fast_validation(model_path, sim_file=None, predefined=False, base_path='
         plt.plot(time_axis, predictions[:, 2], label='Roll (Int/Ext Rot)', color='tab:green', linewidth=2)
         plt.plot(time_axis, predictions[:, 3], label='Elbow (Flex)', color='tab:red', linewidth=2)
         
-        plt.ylim(-40, 120) 
+        # --- DYNAMIC Y-AXIS LIMITS ---
+        y_min = np.min(predictions) - 10
+        y_max = np.max(predictions) + 10
+        plt.ylim(y_min, y_max)
+        
         plt.title(trial_name, fontsize=14, fontweight='bold')
         plt.xlabel("Time (seconds)", fontsize=12)
         plt.ylabel("Predicted Angle (Degrees)", fontsize=12)
@@ -277,8 +281,8 @@ def run_fast_validation(model_path, sim_file=None, predefined=False, base_path='
 
 def run_ensemble_validation(model_path, base_path='./secondary_data'):
     """
-    Hunts down every repetition across all valid participants, perfectly aligns them 
-    by their peaks, and calculates the median trajectory to evaluate generalization.
+    Overlays the FULL prediction timeline of all valid participants for each movement,
+    calculating the median response across the entire trial.
     """
     import matplotlib.pyplot as plt
     import os
@@ -292,17 +296,11 @@ def run_ensemble_validation(model_path, base_path='./secondary_data'):
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
 
-    # Network runs at 16.12 Hz (1000/62). 
-    # Extract 1.5 seconds before peak, and 3.5 seconds after peak (Total = 5 seconds)
-    pre_samp = int(1.5 / (Config.INCREMENT / Config.FS))
-    post_samp = int(3.5 / (Config.INCREMENT / Config.FS))
-    time_axis = np.linspace(-1.5, 3.5, pre_samp + post_samp)
-
     for m in range(1, 9):
-        print(f"Aggregating bursts for Movement {m}...")
-        stacked_bursts = []
+        print(f"Aggregating full trials for Movement {m}...")
+        all_subject_preds = []
+        all_time_axes = []
         
-        # Get target angles for title context
         target_vec = Config.TARGET_MAPPING[m]
         
         for p in range(1, 9):
@@ -312,43 +310,41 @@ def run_ensemble_validation(model_path, base_path='./secondary_data'):
             file_path = os.path.join(base_path, f'Soggetto{p}', f'Movimento{m}.mat')
             if not os.path.exists(file_path): continue
             
-            predictions, _ = get_predictions_for_file(model, device, file_path)
-            
-            # Combine Yaw and Pitch absolute magnitudes to confidently find peaks for ANY movement
-            active_magnitude = np.abs(predictions[:, 0]) + np.abs(predictions[:, 1])
-            
-            # Find peaks (distance=50 samples equates to ~3 seconds lockout)
-            peaks, _ = scipy.signal.find_peaks(active_magnitude, distance=50, height=10)
-            
-            for peak in peaks:
-                # Ensure the burst doesn't clip over the start or end of the file
-                if peak - pre_samp >= 0 and peak + post_samp < len(predictions):
-                    burst = predictions[peak - pre_samp : peak + post_samp, :]
-                    stacked_bursts.append(burst)
+            predictions, time_axis = get_predictions_for_file(model, device, file_path)
+            all_subject_preds.append(predictions)
+            all_time_axes.append(time_axis)
                     
-        if len(stacked_bursts) == 0:
-            print(f"  -> Skipping M{m}: No valid bursts found.")
+        if len(all_subject_preds) == 0:
+            print(f"  -> Skipping M{m}: No valid trials found.")
             continue
             
-        stacked_bursts = np.array(stacked_bursts) # Shape: (Total_Reps, Time_Steps, 4_DOF)
-        median_burst = np.median(stacked_bursts, axis=0)
+        # Truncate all trials to the length of the shortest trial so they can be stacked
+        min_len = min(len(p) for p in all_subject_preds)
+        stacked_trials = np.array([p[:min_len] for p in all_subject_preds])
         
-        plt.figure(figsize=(10, 6))
-        plt.plot(time_axis, median_burst[:, 0], label='Yaw (Flex/Ext)', color='tab:blue', linewidth=3)
-        plt.plot(time_axis, median_burst[:, 1], label='Pitch (Abd/Add)', color='tab:orange', linewidth=3)
-        plt.plot(time_axis, median_burst[:, 2], label='Roll (Int/Ext Rot)', color='tab:green', linewidth=3)
-        plt.plot(time_axis, median_burst[:, 3], label='Elbow (Flex)', color='tab:red', linewidth=3)
+        # Calculate the median across subjects for every time step
+        median_trial = np.median(stacked_trials, axis=0)
+        time_axis = all_time_axes[0][:min_len]
         
-        plt.axvline(0, color='gray', linestyle=':', alpha=0.7, label='Peak Target')
-        plt.ylim(-20, 120)
-        plt.title(f"Ensemble Average: Movement {m} (Target: {target_vec})\nMedian of {len(stacked_bursts)} reps across all valid subjects", fontsize=14, fontweight='bold')
-        plt.xlabel("Time relative to peak (seconds)", fontsize=12)
+        plt.figure(figsize=(18, 5)) # Wider figure to fit the full 100+ seconds
+        plt.plot(time_axis, median_trial[:, 0], label='Yaw (Flex/Ext)', color='tab:blue', linewidth=2)
+        plt.plot(time_axis, median_trial[:, 1], label='Pitch (Abd/Add)', color='tab:orange', linewidth=2)
+        plt.plot(time_axis, median_trial[:, 2], label='Roll (Int/Ext Rot)', color='tab:green', linewidth=2)
+        plt.plot(time_axis, median_trial[:, 3], label='Elbow (Flex)', color='tab:red', linewidth=2)
+        
+        # --- DYNAMIC Y-AXIS LIMITS ---
+        y_min = np.min(median_trial) - 10
+        y_max = np.max(median_trial) + 10
+        plt.ylim(y_min, y_max)
+        
+        plt.title(f"Full-Sequence Ensemble Average: Movement {m} (Target: {target_vec})\nMedian of {len(stacked_trials)} valid subjects across entire timeline", fontsize=14, fontweight='bold')
+        plt.xlabel("Time (seconds)", fontsize=12)
         plt.ylabel("Predicted Angle (Degrees)", fontsize=12)
         plt.legend(loc='upper right')
         plt.grid(True, linestyle='--', alpha=0.6)
         plt.tight_layout()
         
-        save_path = os.path.join(output_dir, f"M{m}-Ensemble-Average.png")
+        save_path = os.path.join(output_dir, f"M{m}-Full-Ensemble.png")
         plt.savefig(save_path, dpi=150)
         plt.close()
         

@@ -140,19 +140,19 @@ class ShoulderRCNN(nn.Module):
         self.inception1 = MultiscaleInception1D(in_channels=num_channels, out_channels_per_branch=16)
         self.pool1 = nn.MaxPool1d(kernel_size=5) 
         self.eca1 = ECABlock(kernel_size=3)
-        self.drop1 = nn.Dropout(p=0.2)
+        self.drop1 = nn.Dropout1d(p=0.2)
         
         # Layer 2
         self.inception2 = MultiscaleInception1D(in_channels=48, out_channels_per_branch=32)
         self.pool2 = nn.MaxPool1d(kernel_size=5)
         self.eca2 = ECABlock(kernel_size=3)
-        self.drop2 = nn.Dropout(p=0.2)
+        self.drop2 = nn.Dropout1d(p=0.2)
         
         # --- 3. Temporal Sequence Learning (RNN/LSTM) ---
         self.lstm = nn.LSTM(input_size=96, hidden_size=64, num_layers=1, batch_first=True)
         
         # --- 3.5. Temporal Attention Mechanism ---
-        self.temporal_attention = TemporalAttention(hidden_size=64)
+        # self.temporal_attention = TemporalAttention(hidden_size=64)
         
         # --- 4. Kinematic Regression Head (DECOUPLED HEADS) ---
         self.fc1 = nn.Linear(64, 32)
@@ -187,10 +187,12 @@ class ShoulderRCNN(nn.Module):
         lstm_out, _ = self.lstm(x)
         
         # Temporal Attention Mechanism: Dynamically weight the sequence
-        context_vector = self.temporal_attention(lstm_out)
+        # context_vector = self.temporal_attention(lstm_out)
+        last_time_step = lstm_out[:, -1, :]
         
         # Pass through the shared dense layer
-        out = self.fc1(context_vector)
+        # out = self.fc1(context_vector)
+        out = self.fc1(last_time_step)
         out = self.relu(out)
         out = self.drop3(out)
         

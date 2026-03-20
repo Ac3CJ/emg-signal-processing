@@ -39,11 +39,16 @@ REST_MIXUP_RATIO = 0.10           # Ratio of new mixup samples to generate (0.5 
 # ====================================================================================
 # 5. NEURAL NETWORK TRAINING PARAMETERS
 # ====================================================================================
-EPOCHS = 100
-BATCH_SIZE = 1024
-PATIENCE = 20              # Early stopping patience
+EPOCHS = 250
+BATCH_SIZE = 512            # Reduced for 16GB RAM constraint (was 1280)
+GRADIENT_ACCUMULATION_STEPS = 2  # Accumulate 2 batches = effective batch of 1024 without RAM spike
+NUM_DATA_WORKERS = 2        # Reduced for RAM (was 4)
+PATIENCE = 40              # Early stopping patience
 LEARNING_RATE = 0.001
+LR_SCHEDULER_FACTOR = 0.5  # Reduce LR by this factor when plateau detected
+LR_SCHEDULER_PATIENCE = 5  # Wait this many epochs before reducing LR
 TEST_SPLIT = 0.2            # 20% of data used for validation
+PREFETCH_FACTOR = 1         # Reduced for RAM (was 2)
 
 # ====================================================================================
 # 6. NETWORKING & TELEMETRY

@@ -2,12 +2,19 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
+import time
 
 import DataPreparation
 import ControllerConfiguration as Config
+
+# GPU Optimization Settings
+torch.backends.cudnn.benchmark = True  # Auto-tune CUDA kernels
+if hasattr(torch.backends, 'xpu'):
+    torch.backends.xpu.benchmark = True  # Auto-tune Intel GPU kernels
 
 # ====================================================================================
 # ============================== CUSTOM LOSS FUNCTION ================================
@@ -189,14 +196,16 @@ def train_model(X_train, y_train, X_val, y_val, batch_size=Config.BATCH_SIZE, ep
     val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
     
     # --- OPTIMIZATION 1: Multi-threaded Data Loading ---
-    # Using 4 workers to utilize CPU efficiently
+    # Parallel workers keep GPU fed with data while computation happens
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True, 
-        num_workers=0, pin_memory=True
+        num_workers=Config.NUM_DATA_WORKERS, pin_memory=True,
+        persistent_workers=True, prefetch_factor=Config.PREFETCH_FACTOR
     )
     val_loader = DataLoader(
         val_dataset, batch_size=batch_size, shuffle=False, 
-        num_workers=0, pin_memory=True
+        num_workers=Config.NUM_DATA_WORKERS, pin_memory=True,
+        persistent_workers=True, prefetch_factor=Config.PREFETCH_FACTOR
     )
     
     device = torch.device("xpu" if torch.xpu.is_available() else "cpu")
@@ -204,12 +213,26 @@ def train_model(X_train, y_train, X_val, y_val, batch_size=Config.BATCH_SIZE, ep
         
     print(f"\n[{'-'*10} SYSTEM CHECK {'-'*10}]")
     print(f"Training on device: {device}")
+    print(f"Batch size: {batch_size} | Gradient Accumulation: {Config.GRADIENT_ACCUMULATION_STEPS}")
+    print(f"Data workers: {Config.NUM_DATA_WORKERS} | Prefetch: {Config.PREFETCH_FACTOR}")
+    print(f"Effective batch size: {batch_size * Config.GRADIENT_ACCUMULATION_STEPS}")
     
     model = ShoulderRCNN(num_channels=X_train.shape[1], num_outputs=y_train.shape[1]).to(device)
 
-    optimizer_criterion = AsymmetricKinematicLoss(phantom_pitch_penalty=5.0) 
+    # optimizer_criterion = AsymmetricKinematicLoss(phantom_pitch_penalty=5.0) 
+    optimizer_criterion = nn.MSELoss()
     tracker_criterion = nn.L1Loss() 
     optimizer = optim.Adam(model.parameters(), lr=Config.LEARNING_RATE)
+    
+    # --- OPTIMIZATION 1.5: Learning Rate Scheduler ---
+    # Reduces learning rate by factor when validation loss plateaus
+    scheduler = ReduceLROnPlateau(
+        optimizer, 
+        mode='min',
+        factor=Config.LR_SCHEDULER_FACTOR,
+        patience=Config.LR_SCHEDULER_PATIENCE,
+        min_lr=1e-6
+    )
     
     # --- OPTIMIZATION 2: Initialize AMP Scaler ---
     # Enable AMP only if hardware is GPU (XPU or CUDA)
@@ -223,17 +246,23 @@ def train_model(X_train, y_train, X_val, y_val, batch_size=Config.BATCH_SIZE, ep
     best_val_loss = float('inf')
     epochs_no_improve = 0
     history_train_mae, history_val_mae = [], []
+    
+    # Start training timer
+    training_start_time = time.time()
 
     print(f"\n[{'-'*10} STARTING TRAINING {'-'*10}]")
     for epoch in range(epochs):
+        epoch_start_time = time.time()
         model.train()
         train_mae = 0.0
+        accum_step = 0
         
-        for batch_X, batch_y in train_loader:
+        for batch_idx, (batch_X, batch_y) in enumerate(train_loader):
             batch_X, batch_y = batch_X.to(device, non_blocking=True), batch_y.to(device, non_blocking=True)
             
-            # set_to_none=True is slightly faster than standard zero_grad()
-            optimizer.zero_grad(set_to_none=True) 
+            # Zero gradients only at the start of accumulation
+            if accum_step == 0:
+                optimizer.zero_grad(set_to_none=True) 
             
             # --- OPTIMIZATION 3: Autocast for Mixed Precision ---
             # Pass the smart dtype into autocast
@@ -241,14 +270,25 @@ def train_model(X_train, y_train, X_val, y_val, batch_size=Config.BATCH_SIZE, ep
                 predictions = model(batch_X)
                 loss = optimizer_criterion(predictions, batch_y)
             
+            # Scale loss for gradient accumulation
+            scaled_loss = loss / Config.GRADIENT_ACCUMULATION_STEPS
+            
             # Only use the scaler if we are on float16 (NVIDIA). Otherwise, normal backward pass!
             if use_scaler:
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
+                scaler.scale(scaled_loss).backward()
             else:
-                loss.backward()
-                optimizer.step()
+                scaled_loss.backward()
+            
+            accum_step += 1
+            
+            # Optimizer step only after accumulating enough gradients or at epoch end
+            if accum_step == Config.GRADIENT_ACCUMULATION_STEPS or batch_idx == len(train_loader) - 1:
+                if use_scaler:
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
+                accum_step = 0
             
             mae = tracker_criterion(predictions, batch_y)
             train_mae += mae.item() * batch_X.size(0)
@@ -283,14 +323,29 @@ def train_model(X_train, y_train, X_val, y_val, batch_size=Config.BATCH_SIZE, ep
         else:
             epochs_no_improve += 1
             status = f"--> No improvement ({epochs_no_improve}/{patience})"
+        
+        # Update learning rate based on validation loss plateau
+        scheduler.step(val_mse_loss)
+        
+        # Calculate epoch time
+        epoch_time = time.time() - epoch_start_time
             
-        print(f"Epoch {epoch+1:02d}/{epochs} | Train Error: {train_mae:6.2f}° | Val Error: {val_mae:6.2f}° {status}")
+        print(f"Epoch {epoch+1:02d}/{epochs} | Train Error: {train_mae:6.2f}° | Val Error: {val_mae:6.2f}° | Time: {epoch_time:6.2f}s {status}")
         
         if epochs_no_improve >= patience:
             print(f"\n[STOP] Early stopping triggered.")
             break
+    
+    # Calculate and display total training time
+    total_training_time = time.time() - training_start_time
+    hours = int(total_training_time // 3600)
+    minutes = int((total_training_time % 3600) // 60)
+    seconds = int(total_training_time % 60)
+    avg_epoch_time = total_training_time / (epoch + 1)
                 
     print(f"\n[{'-'*10} TRAINING COMPLETE {'-'*10}]")
+    print(f"Total Training Time: {hours}h {minutes}m {seconds}s")
+    print(f"Average Time per Epoch: {avg_epoch_time:.2f}s")
     plot_training_history(history_train_mae, history_val_mae)
     
     model.load_state_dict(torch.load(Config.MODEL_SAVE_PATH))

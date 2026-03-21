@@ -3,9 +3,18 @@ from PIL import Image
 
 def generate_movement_grids(source_dir='./signal_plots', save_dir='./movement_grids', scale_factor=0.5):
     """
-    Reads individual channel PNGs and stitches them into a massive grid for each movement.
-    Columns = Participants (1 to 8)
-    Rows = Channels (0 to 7)
+    Reads individual channel PNGs from signal_plots and stitches them into a massive grid for each movement.
+    This creates an 8x8 grid per movement:
+    - Columns = Participants (1 to 8)
+    - Rows = Channels (0 to 7)
+    
+    Prerequisites:
+    - Run SignalAnalysis.py first to generate individual signal_plots/*.png files
+    
+    Args:
+        source_dir (str): Directory containing individual channel PNG files (output from SignalAnalysis.py)
+        save_dir (str): Directory where movement grids will be saved
+        scale_factor (float): Scale factor for final image size (0.5 = 50% of original)
     """
     # Ensure the save directory exists
     if not os.path.exists(save_dir):
@@ -76,5 +85,13 @@ def generate_movement_grids(source_dir='./signal_plots', save_dir='./movement_gr
 # ====================================================================================
 
 if __name__ == "__main__":
+    print("=" * 80)
+    print("ImageGridGenerator: Creating Movement Grid Visualizations")
+    print("=" * 80)
+    print("\nWorkflow:")
+    print("  1. Run SignalAnalysis.py to generate individual signal_plots/*.png files")
+    print("  2. Run this script to stitch them into movement_grids/*.png")
+    print("\nStarting grid generation...")
+    print("")
     # Note: Make sure to pip install Pillow if you haven't already
     generate_movement_grids(source_dir='./signal_plots', save_dir='./movement_grids', scale_factor=0.5)

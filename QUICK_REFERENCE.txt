@@ -1,0 +1,255 @@
+# Raspberry Pi Deployment - Quick Reference
+
+## Terminal Commands (VSCode Terminal)
+
+### Setup Phase (First Time Only)
+```bash
+# Complete environment setup - installs everything
+.\pi-setup.bat
+
+# Reboot Pi to enable SPI/GPIO
+.\pi-deploy.bat --reboot
+```
+
+### Running the Controller
+
+#### 1. Test Mode (Simulation)
+```bash
+.\pi-deploy.bat --simulate
+```
+- No hardware required
+- Uses recorded sample data
+- Good for testing code changes
+
+#### 2. Live Control (Continuous Reading)
+```bash
+.\pi-deploy.bat --hardware --continuous
+```
+- Uses actual MCP3008 hardware
+- Real-time prosthetic operation
+- No data storage (fast + memory efficient)
+
+#### 3. Data Collection
+```bash
+.\pi-deploy.bat --hardware --collect --collection_name "my_trial_name"
+```
+- Records all sensor data for later analysis
+- Real-time prosthetic operation + storage
+- Auto-saves when you stop (Ctrl+C)
+
+### Stopping the Controller
+
+#### Graceful Shutdown (Recommended)
+```
+Press: Ctrl+C
+```
+- Triggers signal handlers
+- Closes hardware connections
+- Saves data if in collection mode
+- Cleans up resources
+
+#### Force Shutdown (Emergency)
+```bash
+.\pi-deploy.bat --shutdown
+```
+- Kills process on Pi
+- Useful if Ctrl+C doesn't work
+
+### Utility Commands
+
+#### Reboot Pi
+```bash
+.\pi-deploy.bat --reboot
+```
+
+#### Just Sync Code (Don't Run)
+```bash
+.\pi-deploy.bat --sync
+```
+
+---
+
+## What Gets Shutdown Automatically
+
+When you stop the controller (Ctrl+C or `--shutdown`), these happen automatically:
+
+✅ **Signal Handlers** - SIGINT (Ctrl+C) and SIGTERM caught  
+✅ **Qt Event Loop** - GUI shutdown trigger  
+✅ **UDP Socket** - Telemetry connection closed  
+✅ **SPI Hardware** - MCP3008 connection released  
+✅ **Data Saving** - If collection mode: prompts/auto-saves  
+✅ **Resource Cleanup** - All GPIO/SPI cleaned up  
+
+**Total shutdown time:** ~1-2 seconds
+
+---
+
+## File Organization on Raspberry Pi
+
+```
+~/emg-controller/  (Main project directory)
+├── venv/                    (Python environment - auto created)
+├── *.py                     (Your Python source files)
+├── hardware_collections/    (Collected data from --collect mode)
+├── signal_plots/            (Generated signal visualizations)
+└── logs/                    (Execution logs)
+```
+
+Data is automatically saved when stopping collection mode with Ctrl+C.
+
+---
+
+## Common Workflows
+
+### Quick Hardware Test
+```bash
+pi-deploy.bat --hardware --continuous
+(wait 5 seconds, observe output)
+Ctrl+C
+(verify clean shutdown message)
+```
+
+### Record a Movement Trial
+```bash
+pi-deploy.bat --hardware --collect --collection_name "abduction_participant_1"
+(perform movement for ~5 seconds)
+Ctrl+C
+(watch for auto-save confirmation)
+```
+
+### Update Code and Retest
+```bash
+(edit code in VSCode)
+pi-deploy.bat --sync
+pi-deploy.bat --simulate
+(watch output, fix bugs)
+```
+
+---
+
+## Shutdown Behavior by Mode
+
+| Mode | Ctrl+C Behavior | Shutdown Time |
+|------|-----------------|---------------|
+| Simulate | Instant | ~1s |
+| Hardware Continuous | Graceful | ~1s |
+| Hardware Collection | Graceful + Save | ~2s |
+| Hardware (Continuous) | Release SPI, close socket | ~1-2s |
+| Hardware (Collect) | Release SPI, **save data**, close socket | ~2-3s |
+
+In **data collection mode**: if you see a prompt (~1s after Ctrl+C), the file is being saved.
+
+---
+
+## If Something Goes Wrong
+
+### Process Won't Stop
+```bash
+# Forcefully terminate
+Ctrl+C  (try again)
+
+# If still stuck:
+pi-deploy.bat --shutdown
+
+# Ultimate force (kills ALL Python processes)
+ssh realcj@realcj-pi5.local "pkill -9 python3"
+```
+
+### Can't Connect to Pi
+```bash
+# Test connectivity
+ping realcj-pi5.local
+
+# Test SSH
+ssh realcj@realcj-pi5.local "echo 'connected'"
+
+# If both fail: Pi is offline or hostname wrong
+```
+
+### Hardware Not Working
+```bash
+# Verify wiring and SPI is enabled
+pi-deploy.bat --test-hardware
+
+# Should output:
+# ✓ SPI interface OK
+# ✓ GPIO access OK
+```
+
+---
+
+## Example Session
+
+```cmd
+C:\path\to\project> pi-deploy.bat --hardware --continuous
+=========================================
+Raspberry Pi 5 - Deployment and Control
+=========================================
+
+Target Host: realcj-pi5.local
+Mode: hardware
+Hardware: Enabled
+  |-- Reading Mode: Continuous (no storage)
+
+[STEP 1] Testing SSH Connection...
+[OK] Connected to realcj-pi5.local
+
+[STEP 2] Syncing Code Files...
+[OK] Code files synchronized
+
+[STEP 3] Cleaning Up Previous Processes...
+[OK] Previous processes cleaned
+
+[STEP 4] Executing Controller...
+=========================================
+
+Executing: python3 emg-shoulder-prosthetic-controller.py --hardware --continuous --model best_shoulder_rcnn.pth
+
+[Controller] Starting Real-Time Control GUI (Hardware mode). Close the window to stop.
+[Controller] Event loop running. Press Ctrl+C to stop.
+
+Sending Telemetry: 45.23, 12.45, 78.90, 34.56
+Sending Telemetry: 45.18, 12.48, 78.87, 34.52
+...
+(Ctrl+C pressed)
+
+[Controller] SIGINT received. Initiating graceful shutdown...
+[Main] Cleaning up resources...
+[Main] ✓ UDP Socket closed
+[Main] ✓ Hardware resources cleaned up
+[Main] Shutdown complete
+
+=========================================
+Execution Finished (Exit Code: 0)
+=========================================
+
+C:\path\to\project> 
+```
+
+---
+
+## Key Features Implemented
+
+✅ **Complete Setup Automation** - `pi-setup.bat` handles everything  
+✅ **Easy Deployment** - Single command from VSCode terminal  
+✅ **Multiple Modes** - Simulate, continuous, data collection  
+✅ **Graceful Shutdown** - Ctrl+C properly cleans everything  
+✅ **Headless Operation** - Auto-saves data when no terminal interaction  
+✅ **Code Syncing** - Updates code without redeploying everything  
+✅ **Hardware Diagnostics** - Built-in verification tools  
+✅ **Proper Signal Handling** - SIGINT and SIGTERM both work  
+✅ **Resource Cleanup** - SPI, GPIO, sockets all closed properly  
+
+---
+
+## Notes
+
+- **First setup takes 30-45 minutes** (mostly PyTorch installation)
+- **Subsequent runs are instant** (just code sync + execution)
+- **Headless mode detected automatically** (when SSH without GUI)
+- **Data auto-saved in collection mode** on exit with Ctrl+C
+- **No manual SSH commands needed** - batch scripts handle everything
+
+---
+
+For detailed info, see: `PI_DEPLOYMENT.md`

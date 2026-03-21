@@ -97,15 +97,20 @@ TARGET_MAPPING = {
 # Not Indexed at 0 for easier human readability (Subject 1 = Soggetto1, Movement 1 = Movimento1)
 CORRUPTED_TRIALS = [
     (1, 1),  # P1, M1: Defective Pectoralis Major (Sternal)
-    (7, 1),  # P7, M1: Defective Latissimus Dorsi
     (5, 1),  # P5, M1: Defective Trapezius Ascendant
+    (7, 1),  # P7, M1: Defective Latissimus Dorsi
     (8, 2),  # P8, M2: Defective Latissimus Dorsi
-    (4, 2),  # P4, M2: Noisy Serratus Anterior
     (8, 3),  # P8, M3: Defective Latissimus Dorsi
+    (3, 4),  # P3, M4: Defective Trapezius Ascendant
     (4, 4),  # P4, M4: Noisy Everything
     (1, 5),  # P1, M5: Defective Serratus Anterior
     (6, 5),  # P6, M5: Defective Trapezius Ascendant
+    (3, 6),  # P3, M6: FATAL - Flatline Trapezius Ascendant
     (4, 6),  # P4, M6: Noisy Serratus Anterior
+    (7, 6),  # P7, M6: FATAL - Flatline Trapezius Ascendant
+    (3, 7),  # P3, M7: FATAL - Flatline Trapezius Ascendant
+    (7, 7),  # P7, M7: FATAL - Flatline Trapezius Ascendant
+    (7, 8),  # P7, M8: FATAL - Flatline Trapezius Ascendant
 ]
 
 # New CORRUPTED TRIALS identified during validation (added 2024-06-15, much worse than before)

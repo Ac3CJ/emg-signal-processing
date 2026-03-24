@@ -73,6 +73,7 @@ scp SignalProcessing.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
 scp emg-shoulder-prosthetic-controller.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
 scp ModelTraining.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
 scp DataPreparation.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
+scp best_shoulder_rcnn.pth %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
 echo [OK] Code files synchronized
 echo.
 
@@ -107,6 +108,23 @@ echo Controller is running. Press Ctrl+C to stop gracefully.
 echo.
 
 ssh %PI_USER%@%PI_HOST% "cd %PI_PROJECT_DIR% && source %PI_VENV%/bin/activate && export DISPLAY=:0 && python3 -u %PI_PROJECT_DIR%/emg-shoulder-prosthetic-controller.py !CMD_ARGS!"
+set EXIT_CODE=%errorlevel%
+
+echo.
+echo [STEP 5] Retrieving Collected Data...
+echo =========================================
+if "%COLLECT%"=="1" (
+    echo Pulling %COLLECTION_NAME%.mat from Raspberry Pi...
+    scp %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/hardware_collections/%COLLECTION_NAME%.mat "%USERPROFILE%\Documents"
+    
+    if errorlevel 0 (
+        echo [OK] Successfully saved to your Windows Desktop!
+    ) else (
+        echo [WARNING] Failed to pull the .mat file. You may need to transfer it manually.
+    )
+) else (
+    echo No data collection requested. Skipping transfer.
+)
 
 echo.
 echo =========================================

@@ -155,10 +155,13 @@ class DataCollectionMode(SignalReadingMode):
         Args:
             output_path (str): Path to save the .mat file. Defaults to
                               './hardware_collections/{collection_name}.mat'
+        
+        Returns:
+            str: Path to the saved .mat file, or None if save failed
         """
         if not self.collected_data:
             print("Warning: No data collected to save.")
-            return False
+            return None
             
         if output_path is None:
             os.makedirs('./hardware_collections', exist_ok=True)
@@ -171,7 +174,7 @@ class DataCollectionMode(SignalReadingMode):
         scipy.io.savemat(output_path, {'EMGDATA': full_data})
         
         print(f"[Data Collection] Saved {self.sample_count} samples ({self.sample_count/Config.FS:.2f}s) to {output_path}")
-        return True
+        return output_path
         
     def clear_collection(self):
         """Clear collected data from memory."""

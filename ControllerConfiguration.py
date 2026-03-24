@@ -19,6 +19,12 @@ INCREMENT = 62              # 62 ms step size (~16 Hz update rate)
 SMOOTHING_ALPHA = 0.1       # Exponential moving average factor for kinematic output (0.0 to 1.0)
 
 # ====================================================================================
+# 2b. VISUALIZATION SETTINGS
+# ====================================================================================
+VIS_WINDOW_SIZE_MS = 4500   # Visualization window duration in milliseconds (4.5 seconds)
+PLOT_EMG_RATIO = 0.8        # Fraction of screen for EMG plots (0.8 = 80% EMG, 20% Kinematics)
+
+# ====================================================================================
 # 3. SIGNAL PROCESSING (FILTERING)
 # ====================================================================================
 NOTCH_FREQ = 50.0           # UK Powerline noise frequency
@@ -53,7 +59,8 @@ PREFETCH_FACTOR = 1         # Reduced for RAM (was 2)
 # ====================================================================================
 # 6. NETWORKING & TELEMETRY
 # ====================================================================================
-UDP_IP = "127.0.0.1"        # Localhost for virtual environment testing
+# IP from Phone's Mobile Network 10.161.179.75
+UDP_IP = "10.161.179.75"     # IP from Phone's Mobile Network
 UDP_PORT = 5005             # Port listening on the Unity/Virtual Environment side
 
 # ====================================================================================
@@ -95,6 +102,21 @@ TARGET_MAPPING = {
 }
 
 # Not Indexed at 0 for easier human readability (Subject 1 = Soggetto1, Movement 1 = Movimento1)
+
+
+# Movement names for user selection (1-9)
+MOVEMENT_NAMES = {
+    1: "Flexion 45°",
+    2: "Flexion 90°",
+    3: "Flexion 110°",
+    4: "Hyperextension -30°",
+    5: "Abduction 45°",
+    6: "Abduction 90°",
+    7: "Elevation 45°",
+    8: "Elevation 90°",
+    9: "Rest"
+}
+
 CORRUPTED_TRIALS = [
     (1, 1),  # P1, M1: Defective Pectoralis Major (Sternal)
     (5, 1),  # P5, M1: Defective Trapezius Ascendant

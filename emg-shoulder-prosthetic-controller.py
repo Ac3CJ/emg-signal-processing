@@ -229,8 +229,16 @@ class RealTimeProstheticController:
         self.data_buffer = np.roll(self.data_buffer, -Config.INCREMENT, axis=1)
         self.data_buffer[:, -Config.INCREMENT:] = new_data
         
+        # Apply filtering pipeline to visualization data to see actual muscle activity
+        filtered_new_data = np.zeros_like(new_data)
+        for i in range(Config.NUM_CHANNELS):
+            # filtered_new_data[i, :] = SignalProcessing.applyStandardSEMGProcessing(
+            #     new_data[i, :], fs=Config.FS
+            # )
+            filtered_new_data[i, :] = new_data[i, :]
+        
         self.vis_buffer = np.roll(self.vis_buffer, -Config.INCREMENT, axis=1)
-        self.vis_buffer[:, -Config.INCREMENT:] = new_data
+        self.vis_buffer[:, -Config.INCREMENT:] = filtered_new_data
         
         for i in range(Config.NUM_CHANNELS):
             self.curves_emg[i].setData(self.vis_buffer[i])

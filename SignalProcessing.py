@@ -79,33 +79,42 @@ def medianSubtractionFilter(signal, windowSize):
     baseline = ndimage.median_filter(signal, size=int(windowSize))
     return signal - baseline
 
-def normaliseSignal(signal, definedMin=None, definedMax=None):
+def normaliseSignal(signal, definedMin=None, definedMax=None, output_range=(-1.0, 1.0)):
     """
-    Normalizes the signal to a 0.0 to 1.0 range based on min/max values.
+    Normalizes the signal to a specified range based on min/max values.
+    Default output range is -1.0 to 1.0 (suitable for neural networks).
 
     Args:
         signal (np.ndarray): Input signal
         definedMin (Optional[float]): Fixed min value to use for normalization. Defaults to None.
         definedMax (Optional[float]): Fixed max value to use for normalization. Defaults to None.
+        output_range (tuple): (min, max) output range. Default is (-1.0, 1.0).
 
     Returns:
-        np.ndarray: The normalized signal.
+        np.ndarray: The normalized signal in the specified output range.
     """
-    # return signal           # Remove this line to enable normalisation again (it ruined the results when ON)
-    minValue = min(signal)
-    
+    minValue = np.min(signal)
+
     if definedMin is not None:
         minValue = definedMin
 
-    signal = signal + abs(minValue)
-    maxValue = max(signal)
+    # Shift signal to start at 0
+    signal = signal - minValue
+    maxValue = np.max(signal)
 
     if definedMax is not None:
         maxValue = definedMax
 
     if maxValue == 0:
         return signal
-    signal = (signal / maxValue)
+
+    # Normalize to 0-1 range first
+    signal = signal / maxValue
+
+    # Scale to desired output range
+    range_min, range_max = output_range
+    signal = signal * (range_max - range_min) + range_min
+
     return signal
 
 def tkeo(signal):

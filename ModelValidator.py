@@ -14,24 +14,90 @@ def get_predictions_for_file(model, device, file_path):
 
     clean_data = np.zeros_like(raw_data, dtype=np.float32)
     for c in range(Config.NUM_CHANNELS):
+        # ===== SAME PREPROCESSING PIPELINE AS TRAINING =====
+        # 1. Notch filter (remove 50Hz powerline noise)
         sig = SignalProcessing.notchFilter(raw_data[c, :], fs=Config.FS, notchFreq=Config.NOTCH_FREQ)
+
+        # 2. Bandpass filter (remove movement artifacts and high-freq noise)
         sig = SignalProcessing.bandpassFilter(sig, fs=Config.FS, lowCut=Config.BANDPASS_LOW, highCut=Config.BANDPASS_HIGH)
-        clean_data[c, :] = np.abs(sig)
+
+        # 3. Rectify
+        sig = np.abs(sig)
+
+        # 4. Normalize to -1 to 1 range (CRITICAL: same as training pipeline)
+        sig = SignalProcessing.normaliseSignal(sig, output_range=(-1.0, 1.0))
+
+        clean_data[c, :] = sig
 
     predictions = []
     smoothed_pred = np.zeros(Config.NUM_OUTPUTS)
     window_starts = list(range(0, num_samples - Config.WINDOW_SIZE + 1, Config.INCREMENT))
-    
+
     with torch.no_grad():
         for start in window_starts:
             window = clean_data[:, start:start+Config.WINDOW_SIZE]
             window_tensor = torch.tensor(window, dtype=torch.float32).unsqueeze(0).to(device)
-            
+
             pred = model(window_tensor).cpu().numpy()[0]
             smoothed_pred = (Config.SMOOTHING_ALPHA * pred) + ((1.0 - Config.SMOOTHING_ALPHA) * smoothed_pred)
             predictions.append(smoothed_pred.copy())
-            
+
     return np.array(predictions), np.array(window_starts) / Config.FS
+
+def run_collected_validation(model_path, participant_num, base_path='./collected_data'):
+    """
+    Validates all movements (M1-M9) for a specific participant using collected data.
+    Files are named P{p}M{m}.mat in ./collected_data directory.
+    """
+    import matplotlib.pyplot as plt
+    import os
+    
+    output_dir = 'kinematic-plots'
+    os.makedirs(output_dir, exist_ok=True)
+
+    print(f"\n[Collected Data Validation] Loading Model: {model_path}")
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = ShoulderRCNN(num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS).to(device)
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.eval()
+
+    print(f"[Collected Data Validation] Processing Participant P{participant_num}...")
+    
+    for m in range(1, 10):
+        file_path = os.path.join(base_path, f'P{participant_num}M{m}.mat')
+        
+        if not os.path.exists(file_path):
+            print(f"  -> Skipping P{participant_num}M{m}: File not found at {file_path}")
+            continue
+
+        trial_name = f"P{participant_num}M{m}-kinematics"
+        
+        print(f"  -> Analyzing {trial_name}...")
+        predictions, time_axis = get_predictions_for_file(model, device, file_path)
+
+        plt.figure(figsize=(18, 5))
+        plt.plot(time_axis, predictions[:, 0], label='Yaw (Flex/Ext)', color='tab:blue', linewidth=2)
+        plt.plot(time_axis, predictions[:, 1], label='Pitch (Abd/Add)', color='tab:orange', linewidth=2)
+        plt.plot(time_axis, predictions[:, 2], label='Roll (Int/Ext Rot)', color='tab:green', linewidth=2)
+        plt.plot(time_axis, predictions[:, 3], label='Elbow (Flex)', color='tab:red', linewidth=2)
+        
+        # --- DYNAMIC Y-AXIS LIMITS ---
+        y_min = np.min(predictions) - 10
+        y_max = np.max(predictions) + 10
+        plt.ylim(y_min, y_max)
+        
+        plt.title(trial_name, fontsize=14, fontweight='bold')
+        plt.xlabel("Time (seconds)", fontsize=12)
+        plt.ylabel("Predicted Angle (Degrees)", fontsize=12)
+        plt.legend(loc='upper right')
+        plt.grid(True, linestyle='--', alpha=0.6)
+        plt.tight_layout()
+        
+        save_path = os.path.join(output_dir, f"{trial_name}.png")
+        plt.savefig(save_path, dpi=150)
+        plt.close()
+
+    print(f"\n[Collected Data Validation] Success! Plots saved to ./{output_dir}/")
 
 def run_fast_validation(model_path, sim_file=None, predefined=False, base_path='./secondary_data'):
     import matplotlib.pyplot as plt
@@ -174,6 +240,7 @@ if __name__ == "__main__":
     parser.add_argument('--validate', action='store_true', help='Fast-forward process a single sim_file')
     parser.add_argument('--validate_predefined', action='store_true', help='Run the entire benchmark suite of 8 files')
     parser.add_argument('--validate_ensemble', action='store_true', help='Generate aligned median average plots across all participants')
+    parser.add_argument('--collected', type=int, help='Validate all movements for a participant using collected data (e.g., --collected 1 validates P1M1-P1M9)')
     parser.add_argument('--model', type=str, default=Config.MODEL_SAVE_PATH, help='Path to the trained PyTorch weights')
     parser.add_argument('--sim_file', type=str, default='./secondary_data/Soggetto1/Movimento3.mat', help='Specific .mat file to stream')
     
@@ -185,3 +252,5 @@ if __name__ == "__main__":
         run_fast_validation(model_path=args.model, predefined=True, base_path=Config.BASE_DATA_PATH)
     if args.validate:
         run_fast_validation(model_path=args.model, sim_file=args.sim_file, predefined=False)
+    if args.collected is not None:
+        run_collected_validation(model_path=args.model, participant_num=args.collected)

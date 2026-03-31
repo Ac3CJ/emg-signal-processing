@@ -277,7 +277,12 @@ class RealTimeProstheticController:
         
         cleaned_window = np.zeros_like(self.data_buffer)
         for i in range(Config.NUM_CHANNELS):
+            # ===== SAME PREPROCESSING PIPELINE AS TRAINING & VALIDATION =====
+            # 1. Apply standard sEMG processing (notch, bandpass, rectification)
             cleaned_window[i, :] = SignalProcessing.applyStandardSEMGProcessing(self.data_buffer[i, :], fs=Config.FS)
+
+            # 2. Normalize to -1 to 1 range (CRITICAL: same as training & validation pipelines)
+            cleaned_window[i, :] = SignalProcessing.normaliseSignal(cleaned_window[i, :], output_range=(-1.0, 1.0))
         
         input_tensor = torch.tensor(cleaned_window, dtype=torch.float32).unsqueeze(0).to(self.device)
         with torch.no_grad():

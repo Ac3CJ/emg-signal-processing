@@ -104,7 +104,8 @@ class EMGInteractivePlotter:
         self.tkeo_data = np.zeros_like(self.raw_data)
 
         for c in range(self.num_channels):
-            notch = SignalProcessing.notchFilter(self.raw_data[c, :], fs=self.fs, notchFreq=Config.NOTCH_FREQ)
+            median = scipy.signal.medfilt(self.raw_data[c, :], kernel_size=11)
+            notch = SignalProcessing.notchFilter(median, fs=self.fs, notchFreq=Config.NOTCH_FREQ)
             band = SignalProcessing.bandpassFilter(notch, fs=self.fs, lowCut=Config.BANDPASS_LOW, highCut=Config.BANDPASS_HIGH)
 
             rectified_classic = np.abs(band)
@@ -309,8 +310,10 @@ if __name__ == "__main__":
     if RUN_BATCH_GENERATION:
         batch_generate_all_plots()
     else:
-        file_location = './secondary_data/Soggetto5/'
-        file_name = file_location + 'Movimento5.mat' 
+        # file_location = './secondary_data/Soggetto5/'
+        # file_name = file_location + 'Movimento5.mat' 
+        file_location = './collected_data/'
+        file_name = file_location + 'P1M1_edit.mat' 
         contents, keys = get_mat_headers(file_name)
 
         if contents and 'EMGDATA' in contents:

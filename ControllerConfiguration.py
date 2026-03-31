@@ -60,7 +60,7 @@ PREFETCH_FACTOR = 1         # Reduced for RAM (was 2)
 # 6. NETWORKING & TELEMETRY
 # ====================================================================================
 # IP from Phone's Mobile Network "10.161.179.75", "172.26.212.181", "169.254.128.156"
-UDP_IP = "192.168.137.1"
+UDP_IP = "10.161.179.75"
 UDP_PORT = 5005             # Port listening on the Unity/Virtual Environment side
 
 # ====================================================================================

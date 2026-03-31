@@ -142,59 +142,70 @@ def load_and_prepare_dataset(base_path='./secondary_data'):
     all_active_targets = []
     all_rest_valleys = []
     REST_VECTOR = np.array(Config.TARGET_MAPPING[9], dtype=np.float32)
-    
+
     print("Beginning Split-Pipeline data extraction...")
-    
+    print("NOTE: Raw data is recorded as-is. Preprocessing and normalization applied only for NN analysis.\n")
+
     # 1. Collect all raw bursts via the Split Pipeline
-    for p in range(1, 9):       
-        for m in range(1, 10):  
+    for p in range(1, 9):
+        for m in range(1, 10):
             if hasattr(Config, 'CORRUPTED_TRIALS') and (p, m) in Config.CORRUPTED_TRIALS:
                 continue
-                
+
             file_path = os.path.join(base_path, f'Soggetto{p}', f'Movimento{m}.mat')
             if not os.path.exists(file_path): continue
-                
+
             mat = scipy.io.loadmat(file_path)
             if 'EMGDATA' not in mat: continue
             raw_data = mat['EMGDATA']
-            
+
             classic_data = np.zeros_like(raw_data, dtype=np.float32)
             tkeo_data = np.zeros_like(raw_data, dtype=np.float32)
-            
+
             for c in range(Config.NUM_CHANNELS):
+                # ===== PREPROCESSING PIPELINE FOR NN ANALYSIS =====
+                # 1. Notch filter (remove 50Hz powerline noise)
                 notch = SignalProcessing.notchFilter(raw_data[c, :], fs=Config.FS, notchFreq=Config.NOTCH_FREQ)
+
+                # 2. Bandpass filter (remove movement artifacts and high-freq noise)
                 band = SignalProcessing.bandpassFilter(notch, fs=Config.FS, lowCut=Config.BANDPASS_LOW, highCut=Config.BANDPASS_HIGH)
-                
+
+                # 3. Rectify for classic pipeline
                 rectified_classic = np.abs(band)
-                classic_data[c, :] = rectified_classic
-                
+
+                # 4. Normalize to -1 to 1 range for NN input
+                normalised = SignalProcessing.normaliseSignal(rectified_classic, output_range=(-1.0, 1.0))
+
+                classic_data[c, :] = normalised
+
+                # ===== TKEO PIPELINE (for burst detection) =====
                 teager = SignalProcessing.tkeo(band)
                 rectified_teager = np.abs(teager)
                 envelope = SignalProcessing.lowpassFilter(rectified_teager, fs=Config.FS, cutoff=5.0)
-                
+
                 tkeo_max = np.percentile(envelope, 99.9) + 1e-6
                 tkeo_data[c, :] = np.clip(envelope / tkeo_max, 0.0, 1.0)
-            
+
             active_bursts, rest_valleys = extract_bursts_and_valleys(classic_data, tkeo_data, movement_class=m)
             target_vector = np.array(Config.TARGET_MAPPING[m], dtype=np.float32)
-            
+
             for b in active_bursts:
                 all_active_bursts.append(b)
                 all_active_targets.append(target_vector)
             all_rest_valleys.extend(rest_valleys)
-                
+
         print(f"Processed Subject {p}...")
 
     # 2. Apply Mixup to the full 4.5-second Active arrays
     if hasattr(Config, 'MIXUP_RATIO') and Config.MIXUP_RATIO > 0:
         all_active_bursts, all_active_targets = apply_mixup(
-            all_active_bursts, all_active_targets, 
+            all_active_bursts, all_active_targets,
             alpha=Config.MIXUP_ALPHA, mixup_ratio=Config.MIXUP_RATIO
         )
-        
+
     X_data = []
     y_targets = []
-    
+
     # 3. Slice Active bursts into 500ms windows and apply Magnitude Warping
     print("Slicing Active arrays and applying Magnitude Warping...")
     for burst, target in zip(all_active_bursts, all_active_targets):
@@ -202,17 +213,17 @@ def load_and_prepare_dataset(base_path='./secondary_data'):
         for w in windows:
             X_data.append(w)
             y_targets.append(target)
-            
+
             X_data.append(apply_magnitude_warping(w, sigma=0.25))
             y_targets.append(target)
             X_data.append(apply_magnitude_warping(w, sigma=0.40))
             y_targets.append(target)
-            
+
     # 4. Process Rest Valleys: Slice first, then augment
     print("Slicing Rest Valleys and applying Augmentation...")
     rest_windows_unaugmented = []
     rest_targets_unaugmented = []
-    
+
     for valley in all_rest_valleys:
         windows = slice_into_windows(valley, Config.INCREMENT, Config.WINDOW_SIZE)
         for w in windows:
@@ -222,7 +233,7 @@ def load_and_prepare_dataset(base_path='./secondary_data'):
     # Mixup on Rest Windows
     if hasattr(Config, 'REST_MIXUP_RATIO') and Config.REST_MIXUP_RATIO > 0:
         all_rest_windows, all_rest_targets = apply_mixup(
-            rest_windows_unaugmented, rest_targets_unaugmented, 
+            rest_windows_unaugmented, rest_targets_unaugmented,
             alpha=Config.REST_MIXUP_ALPHA, mixup_ratio=Config.REST_MIXUP_RATIO
         )
     else:
@@ -232,7 +243,7 @@ def load_and_prepare_dataset(base_path='./secondary_data'):
     for w, target in zip(all_rest_windows, all_rest_targets):
         X_data.append(w)
         y_targets.append(target)
-        
+
         X_data.append(apply_magnitude_warping(w, sigma=0.25))
         y_targets.append(target)
         X_data.append(apply_magnitude_warping(w, sigma=0.40))
@@ -240,8 +251,9 @@ def load_and_prepare_dataset(base_path='./secondary_data'):
 
     X_data = np.array(X_data, dtype=np.float32)
     y_targets = np.array(y_targets, dtype=np.float32)
-    
+
     print(f"Dataset generated! Total Windows: {X_data.shape[0]}")
+    print(f"Data range after normalization: [{X_data.min():.4f}, {X_data.max():.4f}] (expected: [-1.0, 1.0])\n")
     return X_data, y_targets
 
 if __name__ == "__main__":

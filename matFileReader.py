@@ -313,7 +313,7 @@ if __name__ == "__main__":
         # file_location = './secondary_data/Soggetto5/'
         # file_name = file_location + 'Movimento5.mat' 
         file_location = './collected_data/'
-        file_name = file_location + 'P1M1_edit.mat' 
+        file_name = file_location + 'P1M4_edit.mat' 
         contents, keys = get_mat_headers(file_name)
 
         if contents and 'EMGDATA' in contents:

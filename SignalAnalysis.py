@@ -139,6 +139,217 @@ def generate_all_signal_images(base_data_path='./secondary_data', save_path='./s
     print("Batch generation complete! All images saved.")
 
 # ====================================================================================
+# ============================== MEDIAN ENSEMBLE GENERATION ==========================
+# ====================================================================================
+
+def generate_median_ensemble_plots(base_data_path='./secondary_data', save_path='./signal_plots/ensemble'):
+    """
+    Computes median waveforms and spectrograms across all participants.
+    Generates two images per movement: standard time-series and spectrograms.
+    """
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+        
+    print(f"Starting median ensemble generation in '{save_path}'...")
+    
+    for m in range(1, 10):
+        print(f"Processing Movement {m}...")
+        movement_name = Config.MOVEMENT_NAMES.get(m, f"Movement {m}") if hasattr(Config, 'MOVEMENT_NAMES') else f"Movement {m}"
+        
+        all_raw_signals = {c: [] for c in range(8)} 
+        all_filtered_signals = {c: [] for c in range(8)} 
+        time_axis = None
+        
+        for p in range(1, 9):
+            file_name = os.path.join(base_data_path, f'Soggetto{p}', f'Movimento{m}.mat')
+            if not os.path.exists(file_name):
+                continue
+                
+            try:
+                mat_contents = scipy.io.loadmat(file_name)
+                if 'EMGDATA' not in mat_contents: continue
+                    
+                raw_data = mat_contents['EMGDATA']
+                num_channels, num_samples = raw_data.shape
+                
+                if time_axis is None or len(time_axis) < num_samples:
+                    time_axis = np.arange(num_samples) / Config.FS
+                
+                for c in range(num_channels):
+                    raw_signal = raw_data[c, :]
+                    notch_filtered = SignalProcessing.notchFilter(raw_signal, fs=Config.FS, notchFreq=Config.NOTCH_FREQ, qualityFactor=Config.NOTCH_QUALITY)
+                    band_filtered = SignalProcessing.bandpassFilter(notch_filtered, fs=Config.FS, lowCut=Config.BANDPASS_LOW, highCut=Config.BANDPASS_HIGH, order=4)
+                    rectified_signal = np.abs(band_filtered)
+                    
+                    all_raw_signals[c].append(raw_signal)
+                    all_filtered_signals[c].append(rectified_signal)
+                    
+            except Exception as e:
+                print(f"  Error processing P{p} M{m}: {e}")
+        
+        num_valid_participants = len(all_raw_signals[0])
+        if num_valid_participants == 0:
+            print(f"  No valid data found for Movement {m}. Skipping.\n")
+            continue
+        
+        min_length = min([len(sig) for sig in all_raw_signals[0]])
+        for c in range(8):
+            all_raw_signals[c] = [sig[:min_length] for sig in all_raw_signals[c]]
+            all_filtered_signals[c] = [sig[:min_length] for sig in all_filtered_signals[c]]
+        time_axis = time_axis[:min_length]
+
+        median_raw = {}
+        median_filtered = {}
+        for c in range(8):
+            if len(all_raw_signals[c]) > 0:
+                median_raw[c] = np.median(np.array(all_raw_signals[c]), axis=0)
+                median_filtered[c] = np.median(np.array(all_filtered_signals[c]), axis=0)
+        
+        # ====================================================================
+        # PLOT 1: STANDARD TIME-SERIES (Raw vs Filtered)
+        # ====================================================================
+        fig, axes = plt.subplots(nrows=8, ncols=2, figsize=(16, 16))
+        fig.suptitle(f"Movement {m}: {movement_name} (Median across {num_valid_participants} participants)", fontsize=18, fontweight='bold', y=0.995)
+        
+        for c in range(8):
+            ch_name = Config.CHANNEL_MAP.get(c, f"Channel {c}") if hasattr(Config, 'CHANNEL_MAP') else f"Channel {c}"
+            
+            axes[c, 0].plot(time_axis, median_raw[c], color='tab:blue', linewidth=1)
+            axes[c, 0].set_title(f"{ch_name} - Raw", fontsize=11, fontweight='bold')
+            axes[c, 0].set_ylabel("Amplitude", fontsize=10)
+            
+            axes[c, 1].plot(time_axis, median_filtered[c], color='tab:orange', linewidth=1)
+            axes[c, 1].set_title(f"{ch_name} - Filtered & Rectified", fontsize=11, fontweight='bold')
+            axes[c, 1].set_ylabel("Amplitude", fontsize=10)
+        
+        axes[7, 0].set_xlabel("Time (seconds)", fontsize=10)
+        axes[7, 1].set_xlabel("Time (seconds)", fontsize=10)
+        plt.tight_layout()
+        
+        save_name = f"Movement_{m:02d}_{movement_name.replace(' ', '_').replace('/', '-')}_median_ensemble.png"
+        plt.savefig(os.path.join(save_path, save_name), dpi=150, bbox_inches='tight')
+        plt.close(fig) 
+
+        # ====================================================================
+        # PLOT 2: SPECTROGRAMS (Frequency vs Time)
+        # ====================================================================
+        fig_spec, axes_spec = plt.subplots(nrows=8, ncols=1, figsize=(14, 18))
+        fig_spec.suptitle(f"Movement {m}: {movement_name} (Median Spectrogram)", fontsize=18, fontweight='bold', y=0.995)
+        
+        for c in range(8):
+            ch_name = Config.CHANNEL_MAP.get(c, f"Channel {c}") if hasattr(Config, 'CHANNEL_MAP') else f"Channel {c}"
+            ax = axes_spec[c]
+            
+            # Plot the spectrogram using the raw median signal
+            # NFFT=256 gives a good 256ms frequency window. 'magma' highlights intensity beautifully.
+            Pxx, freqs, bins, im = ax.specgram(median_raw[c], NFFT=256, Fs=Config.FS, noverlap=128, cmap='magma')
+            
+            ax.set_title(f"{ch_name} - Spectrogram", fontsize=11, fontweight='bold')
+            ax.set_ylabel("Frequency (Hz)", fontsize=10)
+            
+        axes_spec[7].set_xlabel("Time (seconds)", fontsize=10)
+        plt.tight_layout()
+        
+        spec_save_name = f"Movement_{m:02d}_{movement_name.replace(' ', '_').replace('/', '-')}_median_spectrogram.png"
+        plt.savefig(os.path.join(save_path, spec_save_name), dpi=150, bbox_inches='tight')
+        plt.close(fig_spec)
+                
+    print(f"Generation complete! Time-series and Spectrograms saved to {save_path}/")
+
+def generate_participant_plots(participant_id, base_data_path=r'.\collected_data', save_path='./signal_plots/participant', use_edit_suffix=False):
+    """
+    Generates time-series and spectrogram plots for a single, specific participant.
+    """
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+        
+    print(f"Starting plot generation for Participant {participant_id} in '{save_path}'...")
+    
+    for m in range(1, 10):
+        movement_name = Config.MOVEMENT_NAMES.get(m, f"Movement {m}") if hasattr(Config, 'MOVEMENT_NAMES') else f"Movement {m}"
+        
+        suffix = "_edit" if use_edit_suffix else ""
+        file_name = os.path.join(base_data_path, f'P{participant_id}M{m}{suffix}.mat')
+        
+        if not os.path.exists(file_name):
+            print(f"  [-] Skipping P{participant_id}M{m}: File not found at {file_name}")
+            continue
+            
+        print(f"  [+] Processing P{participant_id}M{m}...")
+        
+        try:
+            mat_contents = scipy.io.loadmat(file_name)
+            if 'EMGDATA' not in mat_contents: continue
+                
+            raw_data = mat_contents['EMGDATA']
+            num_channels, num_samples = raw_data.shape
+            time_axis = np.arange(num_samples) / Config.FS
+            
+            plot_raw = {}
+            plot_filtered = {}
+            
+            for c in range(num_channels):
+                raw_signal = raw_data[c, :]
+                notch_filtered = SignalProcessing.notchFilter(raw_signal, fs=Config.FS, notchFreq=Config.NOTCH_FREQ, qualityFactor=Config.NOTCH_QUALITY)
+                band_filtered = SignalProcessing.bandpassFilter(notch_filtered, fs=Config.FS, lowCut=Config.BANDPASS_LOW, highCut=Config.BANDPASS_HIGH, order=4)
+                rectified_signal = np.abs(band_filtered)
+                
+                plot_raw[c] = raw_signal
+                plot_filtered[c] = rectified_signal
+                
+            # ====================================================================
+            # PLOT 1: STANDARD TIME-SERIES
+            # ====================================================================
+            fig, axes = plt.subplots(nrows=num_channels, ncols=2, figsize=(16, 16))
+            fig.suptitle(f"Participant {participant_id} - Movement {m}: {movement_name}", fontsize=18, fontweight='bold', y=0.995)
+            
+            for c in range(num_channels):
+                ch_name = Config.CHANNEL_MAP.get(c, f"Channel {c}") if hasattr(Config, 'CHANNEL_MAP') else f"Channel {c}"
+                
+                axes[c, 0].plot(time_axis, plot_raw[c], color='tab:blue', linewidth=1)
+                axes[c, 0].set_title(f"{ch_name} - Raw", fontsize=11, fontweight='bold')
+                axes[c, 0].set_ylabel("Amplitude", fontsize=10)
+                
+                axes[c, 1].plot(time_axis, plot_filtered[c], color='tab:orange', linewidth=1)
+                axes[c, 1].set_title(f"{ch_name} - Filtered & Rectified", fontsize=11, fontweight='bold')
+                axes[c, 1].set_ylabel("Amplitude", fontsize=10)
+            
+            axes[-1, 0].set_xlabel("Time (seconds)", fontsize=10)
+            axes[-1, 1].set_xlabel("Time (seconds)", fontsize=10)
+            plt.tight_layout()
+            
+            save_name = f"P{participant_id}_M{m:02d}_{movement_name.replace(' ', '_').replace('/', '-')}.png"
+            plt.savefig(os.path.join(save_path, save_name), dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            
+            # ====================================================================
+            # PLOT 2: SPECTROGRAMS
+            # ====================================================================
+            fig_spec, axes_spec = plt.subplots(nrows=num_channels, ncols=1, figsize=(14, 18))
+            fig_spec.suptitle(f"Participant {participant_id} - Movement {m}: {movement_name} (Spectrogram)", fontsize=18, fontweight='bold', y=0.995)
+            
+            for c in range(num_channels):
+                ch_name = Config.CHANNEL_MAP.get(c, f"Channel {c}") if hasattr(Config, 'CHANNEL_MAP') else f"Channel {c}"
+                ax = axes_spec[c]
+                
+                Pxx, freqs, bins, im = ax.specgram(plot_raw[c], NFFT=256, Fs=Config.FS, noverlap=128, cmap='magma')
+                
+                ax.set_title(f"{ch_name} - Spectrogram", fontsize=11, fontweight='bold')
+                ax.set_ylabel("Frequency (Hz)", fontsize=10)
+                
+            axes_spec[-1].set_xlabel("Time (seconds)", fontsize=10)
+            plt.tight_layout()
+            
+            spec_save_name = f"P{participant_id}_M{m:02d}_{movement_name.replace(' ', '_').replace('/', '-')}_spectrogram.png"
+            plt.savefig(os.path.join(save_path, spec_save_name), dpi=150, bbox_inches='tight')
+            plt.close(fig_spec)
+                
+        except Exception as e:
+            print(f"  [!] Error processing P{participant_id} M{m}: {e}")
+            
+    print(f"\nPlot generation complete for Participant {participant_id}! Images saved to {save_path}/")
+
+# ====================================================================================
 # ============================== EXECUTION ===========================================
 # ====================================================================================
 
@@ -146,5 +357,7 @@ if __name__ == "__main__":
     print("=" * 80)
     print("SignalAnalysis: Batch Signal Processing & Visualization")
     print("=" * 80)
-    generate_all_signal_images(base_data_path=Config.BASE_DATA_PATH, save_path='./signal_plots')
+    # generate_all_signal_images(base_data_path=Config.BASE_DATA_PATH, save_path='./signal_plots')
+    generate_median_ensemble_plots(base_data_path=Config.BASE_DATA_PATH, save_path='./signal_plots/ensemble')
+    generate_participant_plots(participant_id=1, base_data_path='.\collected_data', save_path='.\signal_plots/participant', use_edit_suffix=True)
     print("\nSignal plots are ready for use by ImageGridGenerator.py")

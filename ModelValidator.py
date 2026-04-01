@@ -64,7 +64,7 @@ def run_collected_validation(model_path, participant_num, base_path='./collected
     print(f"[Collected Data Validation] Processing Participant P{participant_num}...")
     
     for m in range(1, 10):
-        file_path = os.path.join(base_path, f'P{participant_num}M{m}.mat')
+        file_path = os.path.join(base_path, f'P{participant_num}M{m}_edit.mat')
         
         if not os.path.exists(file_path):
             print(f"  -> Skipping P{participant_num}M{m}: File not found at {file_path}")

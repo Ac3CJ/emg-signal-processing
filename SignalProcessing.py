@@ -12,6 +12,19 @@ import ControllerConfiguration as Config
 # ================================ CLASSIC PROCESSING ================================
 # ====================================================================================
 
+def slewRateLimiter(signal, max_step=50.0):
+    """
+    Limits the maximum sample-to-sample change in the signal.
+    Prevents instantaneous hardware spikes.
+    """
+    processed = np.copy(signal)
+    for i in range(1, len(signal)):
+        diff = signal[i] - processed[i-1]
+        if abs(diff) > max_step:
+            # Cap the jump at the maximum allowed step
+            processed[i] = processed[i-1] + np.sign(diff) * max_step
+    return processed
+
 def notchFilter(signal, fs=1000.0, notchFreq=50.0, qualityFactor=30.0):
     """
     Applies a Notch filter to remove powerline interference.
@@ -79,9 +92,9 @@ def medianSubtractionFilter(signal, windowSize):
     baseline = ndimage.median_filter(signal, size=int(windowSize))
     return signal - baseline
 
-def normaliseSignal(signal, definedMin=None, definedMax=None, output_range=(-1.0, 1.0)):
+def normaliseSignal(signal, definedMin=None, definedMax=None, output_range=(-1.0, 1.0), percentiles=(1.0, 99.0)):
     """
-    Normalizes the signal to a specified range based on min/max values.
+    Normalizes the signal to a specified range using robust percentiles to ignore hardware spikes.
     Default output range is -1.0 to 1.0 (suitable for neural networks).
 
     Args:
@@ -89,33 +102,39 @@ def normaliseSignal(signal, definedMin=None, definedMax=None, output_range=(-1.0
         definedMin (Optional[float]): Fixed min value to use for normalization. Defaults to None.
         definedMax (Optional[float]): Fixed max value to use for normalization. Defaults to None.
         output_range (tuple): (min, max) output range. Default is (-1.0, 1.0).
+        percentiles (tuple): (lower_percentile, upper_percentile) used to calculate robust min/max.
 
     Returns:
-        np.ndarray: The normalized signal in the specified output range.
+        np.ndarray: The normalized and clipped signal in the specified output range.
     """
-    minValue = np.min(signal)
-
+    # 1. Find robust Minimum (Ignores massive negative spikes)
     if definedMin is not None:
         minValue = definedMin
+    else:
+        minValue = np.percentile(signal, percentiles[0])
 
-    # Shift signal to start at 0
-    signal = signal - minValue
-    maxValue = np.max(signal)
-
+    # 2. Find robust Maximum (Ignores massive positive spikes)
     if definedMax is not None:
         maxValue = definedMax
+    else:
+        maxValue = np.percentile(signal, percentiles[1])
 
-    if maxValue == 0:
-        return signal
+    # Prevent division by zero if the signal is a pure flatline
+    range_span = maxValue - minValue
+    if range_span <= 0:
+        range_span = 1e-6
 
-    # Normalize to 0-1 range first
-    signal = signal / maxValue
+    # 3. Normalize to 0-1 range
+    normalized_01 = (signal - minValue) / range_span
 
-    # Scale to desired output range
+    # 4. Scale to desired output range (e.g., -1.0 to 1.0)
     range_min, range_max = output_range
-    signal = signal * (range_max - range_min) + range_min
+    scaled_signal = normalized_01 * (range_max - range_min) + range_min
 
-    return signal
+    # 5. CRITICAL: Chop off the 1% of spikes that fall outside the bounds!
+    clipped_signal = np.clip(scaled_signal, range_min, range_max)
+
+    return clipped_signal
 
 def tkeo(signal):
     """

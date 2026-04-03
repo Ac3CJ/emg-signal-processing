@@ -1,4 +1,5 @@
 import os
+import re
 import scipy.io
 import numpy as np
 import scipy.signal
@@ -137,17 +138,34 @@ def slice_into_windows(data_array, increment, window_size):
             windows.append(window.astype(np.float32))
     return windows
 
-def load_and_prepare_dataset(base_path='./secondary_data'):
+def load_and_prepare_dataset(base_path='./secondary_data', include_subjects=None):
+    """
+    Load and prepare dataset with optional subject filtering for Leave-One-Subject-Out validation.
+    
+    Args:
+        base_path (str): Path to secondary_data directory
+        include_subjects (list): List of subject IDs to include (e.g., [1,2,3,4,5,6,7] for training).
+                               If None, includes all subjects (1-8).
+    
+    Returns:
+        tuple: (X_data, y_targets) - preprocessed training data
+    """
+    if include_subjects is None:
+        include_subjects = list(range(1, 9))  # All 8 subjects by default
+    
     all_active_bursts = []
     all_active_targets = []
     all_rest_valleys = []
     REST_VECTOR = np.array(Config.TARGET_MAPPING[9], dtype=np.float32)
 
     print("Beginning Split-Pipeline data extraction...")
+    print(f"Include subjects: {include_subjects}")
     print("NOTE: Raw data is recorded as-is. Preprocessing and normalization applied only for NN analysis.\n")
 
     # 1. Collect all raw bursts via the Split Pipeline
     for p in range(1, 9):
+        if p not in include_subjects:
+            continue
         for m in range(1, 10):
             if hasattr(Config, 'CORRUPTED_TRIALS') and (p, m) in Config.CORRUPTED_TRIALS:
                 continue
@@ -255,6 +273,117 @@ def load_and_prepare_dataset(base_path='./secondary_data'):
     print(f"Dataset generated! Total Windows: {X_data.shape[0]}")
     print(f"Data range after normalization: [{X_data.min():.4f}, {X_data.max():.4f}] (expected: [-1.0, 1.0])\n")
     return X_data, y_targets
+
+# ====================================================================================
+# ============================== COLLECTED DATA LOADING ==============================
+# ====================================================================================
+
+def load_collected_data(folder_path, augment=True):
+    """
+    Load and preprocess collected .mat files from a folder.
+    Applies the same preprocessing pipeline as secondary data.
+    
+    Args:
+        folder_path (str): Path to folder containing .mat files
+        augment (bool): Whether to apply augmentation (magnitude warping)
+    
+    Returns:
+        tuple: (X_data, y_data) or (None, None) if no files found
+    """
+    if not os.path.exists(folder_path):
+        print(f"[WARNING] Folder does not exist: {folder_path}")
+        return None, None
+    
+    mat_files = [f for f in os.listdir(folder_path) if f.endswith('.mat')]
+    if len(mat_files) == 0:
+        print(f"[WARNING] No .mat files found in {folder_path}")
+        return None, None
+    
+    print(f"[Collected Data] Found {len(mat_files)} .mat files in {folder_path}")
+    
+    X_data = []
+    y_data = []
+    
+    for mat_file in sorted(mat_files):
+        file_path = os.path.join(folder_path, mat_file)
+        
+        try:
+            mat = scipy.io.loadmat(file_path)
+            if 'EMGDATA' not in mat:
+                print(f"  [SKIP] {mat_file}: No EMGDATA found")
+                continue
+            
+            raw_data = mat['EMGDATA']
+            
+            # Preprocess each channel
+            processed_data = np.zeros_like(raw_data, dtype=np.float32)
+            for c in range(Config.NUM_CHANNELS):
+                # 1. Notch filter (remove 50Hz powerline noise)
+                notch = SignalProcessing.notchFilter(raw_data[c, :], fs=Config.FS, notchFreq=Config.NOTCH_FREQ)
+
+                # 2. Bandpass filter
+                band = SignalProcessing.bandpassFilter(notch, fs=Config.FS, lowCut=Config.BANDPASS_LOW, highCut=Config.BANDPASS_HIGH)
+
+                # 3. Rectify
+                rectified = np.abs(band)
+
+                # 4. Normalize to -1 to 1 range for NN input
+                normalised = SignalProcessing.normaliseSignal(rectified, output_range=(-1.0, 1.0))
+                processed_data[c, :] = normalised
+            
+            # Extract target from filename (assumes format: "P1M1.mat")
+            # For collected data, default to guessing from filename if possible
+            try:
+                filename_base = os.path.splitext(mat_file)[0]  # Remove .mat
+                # Try to extract P and M numbers from filename like "P1M3"
+                match = re.search(r'P(\d+)M(\d+)', filename_base)
+                if match:
+                    movement_id = int(match.group(2))
+                    if movement_id in Config.TARGET_MAPPING:
+                        target_vector = np.array(Config.TARGET_MAPPING[movement_id], dtype=np.float32)
+                    else:
+                        print(f"  [SKIP] {mat_file}: Unknown movement ID {movement_id}")
+                        continue
+                else:
+                    print(f"  [SKIP] {mat_file}: Could not parse movement from filename. Use format P#M#.mat")
+                    continue
+            except Exception as e:
+                print(f"  [SKIP] {mat_file}: Error parsing filename - {e}")
+                continue
+            
+            # Slice into windows (no phase-aligned burst detection for collected data)
+            windows = slice_into_windows(processed_data, Config.INCREMENT, Config.WINDOW_SIZE)
+            
+            if len(windows) == 0:
+                print(f"  [SKIP] {mat_file}: No windows extracted")
+                continue
+            
+            for w in windows:
+                X_data.append(w)
+                y_data.append(target_vector)
+                
+                # Apply augmentation if requested
+                if augment:
+                    X_data.append(apply_magnitude_warping(w, sigma=0.25))
+                    y_data.append(target_vector)
+                    X_data.append(apply_magnitude_warping(w, sigma=0.40))
+                    y_data.append(target_vector)
+            
+            print(f"  [LOADED] {mat_file} ({len(windows)} windows → {len(windows) * (3 if augment else 1)} samples)")
+            
+        except Exception as e:
+            print(f"  [ERROR] {mat_file}: {e}")
+            continue
+    
+    if len(X_data) == 0:
+        print(f"[Collected Data] No valid data extracted from {folder_path}")
+        return None, None
+    
+    X_data = np.array(X_data, dtype=np.float32)
+    y_data = np.array(y_data, dtype=np.float32)
+    
+    print(f"[Collected Data] Total samples from {folder_path}: {X_data.shape[0]}")
+    return X_data, y_data
 
 if __name__ == "__main__":
     X, y = load_and_prepare_dataset()

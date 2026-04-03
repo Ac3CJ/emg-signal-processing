@@ -57,6 +57,17 @@ TEST_SPLIT = 0.2            # 20% of data used for validation
 PREFETCH_FACTOR = 1         # Reduced for RAM (was 2)
 
 # ====================================================================================
+# 5b. TRANSFER LEARNING PARAMETERS
+# ====================================================================================
+TRANSFER_LEARNING_EPOCHS = 75       # Fewer epochs needed for fine-tuning
+TRANSFER_LEARNING_LEARNING_RATE = 0.0001  # Lower learning rate for fine-tuning
+TRANSFER_LEARNING_BATCH_SIZE = 128  # Smaller batch size for collected data
+TRANSFER_LEARNING_PATIENCE = 20     # Early stopping patience for transfer learning
+FREEZE_BACKBONE_LAYERS = True       # Freeze convolutional layers
+NUM_LAYERS_TO_UNFREEZE = 2          # Number of final layers to unfreeze for training
+TRANSFER_LEARNING_MODEL_SAVE_PATH = 'best_shoulder_rcnn_transfer.pth'
+
+# ====================================================================================
 # 6. NETWORKING & TELEMETRY
 # ====================================================================================
 # IP from Phone's Mobile Network "10.161.179.75", "172.26.212.181", "169.254.128.156"

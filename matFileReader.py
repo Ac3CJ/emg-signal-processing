@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, CheckButtons
 import numpy as np
 import os
+import argparse
 
 import SignalProcessing
 import ControllerConfiguration as Config
@@ -305,17 +306,47 @@ def get_mat_headers(file_path):
         return None, None
 
 if __name__ == "__main__":
-    RUN_BATCH_GENERATION = False
-
-    if RUN_BATCH_GENERATION:
+    parser = argparse.ArgumentParser(description="EMG Interactive Plotter for Burst Window Analysis")
+    
+    parser.add_argument('--mode', type=str, default='secondary', choices=['secondary', 'collected'],
+                        help='Data source: "secondary" for secondary_data, "collected" for collected_data')
+    parser.add_argument('--batch', action='store_true', default=False,
+                        help='Run batch generation across all files (only works with secondary data)')
+    parser.add_argument('--p', type=int, default=1,
+                        help='Participant number (1-8 for secondary, 1-N for collected)')
+    parser.add_argument('--m', type=int, default=1,
+                        help='Movement number (1-9)')
+    
+    args = parser.parse_args()
+    
+    # Validate movement number
+    if args.m < 1 or args.m > 9:
+        print(f"Error: Movement number must be between 1 and 9, got {args.m}")
+        exit(1)
+    
+    if args.batch:
+        # Batch generation only works with secondary data
+        if args.mode == 'collected':
+            print("Error: Batch mode only works with secondary data (--mode secondary)")
+            exit(1)
         batch_generate_all_plots()
     else:
-        # file_location = './secondary_data/Soggetto5/'
-        # file_name = file_location + 'Movimento5.mat' 
-        file_location = './collected_data/'
-        file_name = file_location + 'P1M4_edit.mat' 
+        # Construct file path based on mode
+        if args.mode == 'secondary':
+            # Secondary data format: ./secondary_data/Soggetto{p}/Movimento{m}.mat
+            file_location = f'./secondary_data/Soggetto{args.p}/'
+            file_name = file_location + f'Movimento{args.m}.mat'
+        else:  # collected
+            # Collected data format: ./collected_data/edit/P{p}M{m}_edit.mat
+            file_location = './collected_data/edit/'
+            file_name = file_location + f'P{args.p}M{args.m}_edit.mat'
+        
+        # Load and display
+        print(f"Loading {args.mode} data: {file_name}")
         contents, keys = get_mat_headers(file_name)
 
         if contents and 'EMGDATA' in contents:
             raw_emg_data = contents['EMGDATA']
             plotter = EMGInteractivePlotter(raw_emg_data, FS, CHANNEL_MAP, generate_burst_plots=False)
+        else:
+            print(f"Error: Could not load EMGDATA from {file_name}")

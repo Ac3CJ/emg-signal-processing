@@ -2,7 +2,7 @@ import os
 import scipy.io
 import numpy as np
 
-def align_myo_data(input_dir=r".\collected_data", subject="P1"):
+def align_myo_data(input_dir=r".\collected_data", subject="P3"):
     """
     Iterates through P1M1 to P1M9, subtracts the DC offset, 
     and saves as P1M1_edit.mat
@@ -17,8 +17,8 @@ def align_myo_data(input_dir=r".\collected_data", subject="P1"):
         input_filename = f"{subject}M{m}.mat"
         output_filename = f"{subject}M{m}_edit.mat"
         
-        input_path = os.path.join(input_dir, input_filename)
-        output_path = os.path.join(input_dir, output_filename)
+        input_path = os.path.join(input_dir+"/raw/", input_filename)
+        output_path = os.path.join(input_dir+"/edit/", output_filename)
 
         if not os.path.exists(input_path):
             print(f"[-] Skipping {input_filename}: File not found.")

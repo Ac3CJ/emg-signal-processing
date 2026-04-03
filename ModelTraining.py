@@ -395,25 +395,347 @@ def train_model(X_train, y_train, X_val, y_val, batch_size=Config.BATCH_SIZE, ep
     return model
 
 # ====================================================================================
+# ============================== TRANSFER LEARNING ==================================
+# ====================================================================================
+
+def freeze_backbone(model, num_unfreeze_layers=2):
+    """
+    Freezes all layers except the last `num_unfreeze_layers` layers.
+    The unfrozen layers are typically the regression heads and final dense layer.
+    
+    Args:
+        model (nn.Module): The ShoulderRCNN model
+        num_unfreeze_layers (int): Number of final layers to keep trainable
+    """
+    # Get all named parameters
+    named_params = list(model.named_parameters())
+    
+    # Freeze all but the last num_unfreeze_layers layers
+    num_to_freeze = len(named_params) - num_unfreeze_layers
+    
+    for i, (name, param) in enumerate(named_params):
+        if i < num_to_freeze:
+            param.requires_grad = False
+            # print(f"FROZEN: {name}")
+        else:
+            param.requires_grad = True
+            # print(f"TRAINABLE: {name}")
+    
+    print(f"\n[Transfer Learning] Froze {num_to_freeze} layers, unfroze {num_unfreeze_layers} layers")
+    
+    # Count trainable parameters
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Trainable parameters: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.1f}%)")
+
+def train_transfer_learning(X_train, y_train, X_val, y_val, pretrained_model_path, 
+                           batch_size=None, epochs=None, patience=None, freeze_layers=True):
+    """
+    Fine-tunes a pretrained model on new collected data.
+    
+    Args:
+        X_train, y_train: Training data (usually from collected_data/training)
+        X_val, y_val: Validation data (could be combined from multiple sources)
+        pretrained_model_path (str): Path to pretrained model weights
+        batch_size: Training batch size (uses Config.TRANSFER_LEARNING_BATCH_SIZE if None)
+        epochs: Number of epochs (uses Config.TRANSFER_LEARNING_EPOCHS if None)
+        patience: Early stopping patience (uses Config.TRANSFER_LEARNING_PATIENCE if None)
+        freeze_layers (bool): Whether to freeze backbone layers
+    """
+    # Use transfer learning config if not specified
+    if batch_size is None:
+        batch_size = Config.TRANSFER_LEARNING_BATCH_SIZE
+    if epochs is None:
+        epochs = Config.TRANSFER_LEARNING_EPOCHS
+    if patience is None:
+        patience = Config.TRANSFER_LEARNING_PATIENCE
+    
+    X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
+    y_train_tensor = torch.tensor(y_train, dtype=torch.float32)
+    X_val_tensor = torch.tensor(X_val, dtype=torch.float32)
+    y_val_tensor = torch.tensor(y_val, dtype=torch.float32)
+    
+    train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
+    val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
+    
+    train_loader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True, 
+        num_workers=Config.NUM_DATA_WORKERS, pin_memory=True,
+        persistent_workers=True, prefetch_factor=Config.PREFETCH_FACTOR
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=batch_size, shuffle=False, 
+        num_workers=Config.NUM_DATA_WORKERS, pin_memory=True,
+        persistent_workers=True, prefetch_factor=Config.PREFETCH_FACTOR
+    )
+    
+    device = torch.device("xpu" if torch.xpu.is_available() else "cpu")
+    device_type = "xpu" if torch.xpu.is_available() else "cpu"
+    
+    print(f"\n[{'-'*10} TRANSFER LEARNING SETUP {'-'*10}]")
+    print(f"Loading pretrained model from: {pretrained_model_path}")
+    print(f"Training on device: {device}")
+    print(f"Batch size: {batch_size} | Epochs: {epochs} | Patience: {patience}")
+    print(f"Learning rate: {Config.TRANSFER_LEARNING_LEARNING_RATE}")
+    
+    # Load pretrained model
+    model = ShoulderRCNN(num_channels=X_train.shape[1], num_outputs=y_train.shape[1]).to(device)
+    try:
+        model.load_state_dict(torch.load(pretrained_model_path, map_location=device))
+        print(f"✓ Successfully loaded pretrained weights from {pretrained_model_path}")
+    except Exception as e:
+        print(f"✗ ERROR loading pretrained model: {e}")
+        return None
+    
+    # Freeze backbone if requested
+    if freeze_layers and Config.FREEZE_BACKBONE_LAYERS:
+        freeze_backbone(model, num_unfreeze_layers=Config.NUM_LAYERS_TO_UNFREEZE)
+    else:
+        print("[Transfer Learning] Training all layers (no freezing)")
+    
+    optimizer_criterion = nn.MSELoss()
+    tracker_criterion = nn.L1Loss()
+    
+    # Only optimize the parameters that require gradients
+    optimizer = optim.Adam(
+        filter(lambda p: p.requires_grad, model.parameters()), 
+        lr=Config.TRANSFER_LEARNING_LEARNING_RATE
+    )
+    
+    scheduler = ReduceLROnPlateau(
+        optimizer, 
+        mode='min',
+        factor=Config.LR_SCHEDULER_FACTOR,
+        patience=Config.LR_SCHEDULER_PATIENCE,
+        min_lr=1e-7
+    )
+    
+    # AMP Setup
+    use_amp = device_type in ["xpu", "cuda"]
+    amp_dtype = torch.bfloat16 if device_type == "xpu" else torch.float16
+    use_scaler = use_amp and (amp_dtype == torch.float16)
+    scaler = torch.amp.GradScaler(device_type, enabled=use_scaler)
+    
+    best_val_loss = float('inf')
+    epochs_no_improve = 0
+    history_train_mae, history_val_mae = [], []
+    
+    training_start_time = time.time()
+    
+    print(f"\n[{'-'*10} STARTING TRANSFER LEARNING {'-'*10}]")
+    for epoch in range(epochs):
+        epoch_start_time = time.time()
+        model.train()
+        train_mae = 0.0
+        accum_step = 0
+        
+        for batch_idx, (batch_X, batch_y) in enumerate(train_loader):
+            batch_X, batch_y = batch_X.to(device, non_blocking=True), batch_y.to(device, non_blocking=True)
+            
+            if accum_step == 0:
+                optimizer.zero_grad(set_to_none=True)
+            
+            with torch.amp.autocast(device_type, enabled=use_amp, dtype=amp_dtype):
+                predictions = model(batch_X)
+                loss = optimizer_criterion(predictions, batch_y)
+            
+            scaled_loss = loss / Config.GRADIENT_ACCUMULATION_STEPS
+            
+            if use_scaler:
+                scaler.scale(scaled_loss).backward()
+            else:
+                scaled_loss.backward()
+            
+            accum_step += 1
+            
+            if accum_step == Config.GRADIENT_ACCUMULATION_STEPS or batch_idx == len(train_loader) - 1:
+                if use_scaler:
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
+                accum_step = 0
+            
+            mae = tracker_criterion(predictions, batch_y)
+            train_mae += mae.item() * batch_X.size(0)
+        
+        train_mae /= len(train_loader.dataset)
+        history_train_mae.append(train_mae)
+        
+        # Validation Phase
+        model.eval()
+        val_mae, val_mse_loss = 0.0, 0.0
+        with torch.no_grad():
+            for batch_X, batch_y in val_loader:
+                batch_X, batch_y = batch_X.to(device, non_blocking=True), batch_y.to(device, non_blocking=True)
+                
+                with torch.amp.autocast(device_type, enabled=use_amp, dtype=amp_dtype):
+                    predictions = model(batch_X)
+                    val_mse_loss += optimizer_criterion(predictions, batch_y).item() * batch_X.size(0)
+                
+                val_mae += tracker_criterion(predictions, batch_y).item() * batch_X.size(0)
+        
+        val_mse_loss /= len(val_loader.dataset)
+        val_mae /= len(val_loader.dataset)
+        history_val_mae.append(val_mae)
+        
+        status = ""
+        if val_mse_loss < best_val_loss:
+            best_val_loss = val_mse_loss
+            epochs_no_improve = 0
+            torch.save(model.state_dict(), Config.TRANSFER_LEARNING_MODEL_SAVE_PATH)
+            status = f"--> Saved Best Model"
+        else:
+            epochs_no_improve += 1
+            status = f"--> No improvement ({epochs_no_improve}/{patience})"
+        
+        scheduler.step(val_mse_loss)
+        
+        epoch_time = time.time() - epoch_start_time
+        
+        print(f"Epoch {epoch+1:02d}/{epochs} | Train Error: {train_mae:6.2f}° | Val Error: {val_mae:6.2f}° | Time: {epoch_time:6.2f}s {status}")
+        
+        if epochs_no_improve >= patience:
+            print(f"\n[STOP] Early stopping triggered.")
+            break
+    
+    total_training_time = time.time() - training_start_time
+    hours = int(total_training_time // 3600)
+    minutes = int((total_training_time % 3600) // 60)
+    seconds = int(total_training_time % 60)
+    avg_epoch_time = total_training_time / (epoch + 1)
+    
+    print(f"\n[{'-'*10} TRANSFER LEARNING COMPLETE {'-'*10}]")
+    print(f"Total Training Time: {hours}h {minutes}m {seconds}s")
+    print(f"Average Time per Epoch: {avg_epoch_time:.2f}s")
+    print(f"Best model saved to: {Config.TRANSFER_LEARNING_MODEL_SAVE_PATH}")
+    plot_training_history(history_train_mae, history_val_mae)
+    
+    model.load_state_dict(torch.load(Config.TRANSFER_LEARNING_MODEL_SAVE_PATH))
+    return model
+
+# ====================================================================================
 # ============================== DEBUG/DUMMY TEST ====================================
 # ====================================================================================
 
 if __name__ == "__main__":
-    print("Loading actual dataset from secondary files...")
+    import argparse
     
-    # 1. Load the real data using our new script
-    X_full, y_full = DataPreparation.load_and_prepare_dataset(base_path=Config.BASE_DATA_PATH)
+    parser = argparse.ArgumentParser(description="Train ShoulderRCNN model")
+    parser.add_argument('--mode', type=str, choices=['loso', 'transfer'], default='loso',
+                       help='Training mode: loso (Leave-One-Subject-Out) or transfer (Transfer Learning)')
+    parser.add_argument('--pretrained', type=str, default=Config.MODEL_SAVE_PATH,
+                       help='Path to pretrained model (for transfer learning)')
+    parser.add_argument('--freeze', action='store_true', default=True,
+                       help='Freeze backbone layers during transfer learning')
+    args = parser.parse_args()
     
-    if len(X_full) == 0:
-        print("ERROR: No data loaded. Check your file paths!")
-    else:
-        # 2. Shuffle and split into Training (80%) and Validation (20%)
-        # random_state ensures reproducibility 
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_full, y_full, test_size=Config.TEST_SPLIT, random_state=42, shuffle=True
+    # ====================================================================================
+    # LEAVE-ONE-SUBJECT-OUT (LOSO) TRAINING
+    # ====================================================================================
+    if args.mode == 'loso':
+        print("Loading dataset with Leave-One-Subject-Out Validation...")
+        
+        # 1. Load training data (subjects 1-7)
+        print("\n[LOSO Fold] Loading TRAINING data (Subjects 1-7)...")
+        X_train, y_train = DataPreparation.load_and_prepare_dataset(
+            base_path=Config.BASE_DATA_PATH, 
+            include_subjects=list(range(1, 8))
         )
         
-        print(f"\n[{'-'*10} DATASET DISTRIBUTION {'-'*10}]")
+        # 2. Load validation data (subject 8)
+        print("\n[LOSO Fold] Loading VALIDATION data (Subject 8)...")
+        X_val, y_val = DataPreparation.load_and_prepare_dataset(
+            base_path=Config.BASE_DATA_PATH, 
+            include_subjects=[8]
+        )
+        
+        if len(X_train) == 0 or len(X_val) == 0:
+            print("ERROR: No data loaded. Check your file paths!")
+        else:
+            
+            print(f"\n[{'-'*10} DATASET DISTRIBUTION {'-'*10}]")
+            print(f"{'Class Name':<18} | {'Train':<8} | {'Validation':<8}")
+            print("-" * 42)
+            
+            total_train = 0
+            total_val = 0
+            
+            for class_idx, target_angles in Config.TARGET_MAPPING.items():
+                target_vec = np.array(target_angles, dtype=np.float32)
+                
+                # Count how many rows exactly match this target vector
+                train_count = np.sum(np.all(y_train == target_vec, axis=1))
+                val_count = np.sum(np.all(y_val == target_vec, axis=1))
+                
+                total_train += train_count
+                total_val += val_count
+                
+                class_name = f"Movement {class_idx}" if class_idx != 9 else "Rest (Class 9)"
+                print(f"{class_name:<18} | {train_count:<8} | {val_count:<8}")
+                
+            print("-" * 42)
+            print(f"{'TOTAL':<18} | {total_train:<8} | {total_val:<8}\n")
+            
+            print(f"Training on {len(X_train)} samples, Validating on {len(X_val)} samples...")
+            
+            # 3. Train the model for real
+            trained_model = train_model(X_train, y_train, X_val, y_val, epochs=Config.EPOCHS, batch_size=Config.BATCH_SIZE, patience=Config.PATIENCE)
+    
+    # ====================================================================================
+    # TRANSFER LEARNING TRAINING
+    # ====================================================================================
+    elif args.mode == 'transfer':
+        print("Starting Transfer Learning Training...")
+        print(f"Pretrained model: {args.pretrained}")
+        print(f"Freeze backbone: {args.freeze}")
+        
+        # 1. Load collected training data
+        print("\n[Transfer Learning] Loading TRAINING data from collected_data/training...")
+        X_train, y_train = DataPreparation.load_collected_data(
+            folder_path='./collected_data/training',
+            augment=True
+        )
+        
+        if X_train is None or len(X_train) == 0:
+            print("\n✗ ERROR: No training data found in ./collected_data/training/")
+            print("STOPPING: Transfer learning requires training data. Please add .mat files to ./collected_data/training/")
+            exit(1)
+        
+        # 2. Load collected validation data (if available)
+        print("\n[Transfer Learning] Checking for validation data in collected_data/validation...")
+        X_val_collected, y_val_collected = DataPreparation.load_collected_data(
+            folder_path='./collected_data/validation',
+            augment=True
+        )
+        
+        # 3. Always load secondary data validation (from subject 8 LOSO fold)
+        print("\n[Transfer Learning] Loading VALIDATION data from secondary_data (Subject 8)...")
+        X_val_secondary, y_val_secondary = DataPreparation.load_and_prepare_dataset(
+            base_path=Config.BASE_DATA_PATH,
+            include_subjects=[8]
+        )
+        
+        if X_val_secondary is None or len(X_val_secondary) == 0:
+            print("✗ ERROR: Could not load secondary validation data!")
+            exit(1)
+        
+        # 4. Combine validation datasets
+        if X_val_collected is not None and len(X_val_collected) > 0:
+            print(f"\n[Transfer Learning] Combining validation sets:")
+            print(f"  - Collected: {len(X_val_collected)} samples")
+            print(f"  - Secondary: {len(X_val_secondary)} samples")
+            X_val = np.concatenate([X_val_secondary, X_val_collected], axis=0)
+            y_val = np.concatenate([y_val_secondary, y_val_collected], axis=0)
+            print(f"  - Total: {len(X_val)} samples")
+        else:
+            print(f"\n[Transfer Learning] No collected validation data found. Using only secondary data validation.")
+            print(f"  - Secondary: {len(X_val_secondary)} samples")
+            X_val = X_val_secondary
+            y_val = y_val_secondary
+        
+        # 5. Print dataset distribution
+        print(f"\n[{'-'*10} TRANSFER LEARNING DATASET DISTRIBUTION {'-'*10}]")
         print(f"{'Class Name':<18} | {'Train':<8} | {'Validation':<8}")
         print("-" * 42)
         
@@ -423,7 +745,6 @@ if __name__ == "__main__":
         for class_idx, target_angles in Config.TARGET_MAPPING.items():
             target_vec = np.array(target_angles, dtype=np.float32)
             
-            # Count how many rows exactly match this target vector
             train_count = np.sum(np.all(y_train == target_vec, axis=1))
             val_count = np.sum(np.all(y_val == target_vec, axis=1))
             
@@ -432,11 +753,15 @@ if __name__ == "__main__":
             
             class_name = f"Movement {class_idx}" if class_idx != 9 else "Rest (Class 9)"
             print(f"{class_name:<18} | {train_count:<8} | {val_count:<8}")
-            
+        
         print("-" * 42)
         print(f"{'TOTAL':<18} | {total_train:<8} | {total_val:<8}\n")
         
         print(f"Training on {len(X_train)} samples, Validating on {len(X_val)} samples...")
         
-        # 3. Train the model for real
-        trained_model = train_model(X_train, y_train, X_val, y_val, epochs=Config.EPOCHS, batch_size=Config.BATCH_SIZE, patience=Config.PATIENCE)
+        # 6. Train with transfer learning
+        trained_model = train_transfer_learning(
+            X_train, y_train, X_val, y_val,
+            pretrained_model_path=args.pretrained,
+            freeze_layers=args.freeze
+        )

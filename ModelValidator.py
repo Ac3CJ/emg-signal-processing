@@ -44,7 +44,7 @@ def get_predictions_for_file(model, device, file_path):
 
     return np.array(predictions), np.array(window_starts) / Config.FS
 
-def run_collected_validation(model_path, participant_num, base_path='./collected_data'):
+def run_collected_validation(model_path, participant_num, base_path='./collected_data/edit'):
     """
     Validates all movements (M1-M9) for a specific participant using collected data.
     Files are named P{p}M{m}.mat in ./collected_data directory.
@@ -115,7 +115,8 @@ def run_fast_validation(model_path, sim_file=None, predefined=False, base_path='
 
     if predefined:
         print("[Fast Validation] Running predefined benchmark suite...")
-        test_cases = [(6, 1), (7, 2), (2, 3), (6, 4), (7, 5), (5, 6), (6, 7), (8, 8)]
+        # test_cases = [(6, 1), (7, 2), (2, 3), (6, 4), (7, 5), (5, 6), (6, 7), (8, 8)]
+        test_cases = [(8, 1), (8, 2), (8, 3), (8, 4), (8, 5), (8, 6), (8, 7), (8, 8), (8, 9)]
         files_to_process = [os.path.join(base_path, f'Soggetto{p}', f'Movimento{m}.mat') for p, m in test_cases]
     else:
         if not sim_file:
@@ -180,7 +181,7 @@ def run_ensemble_validation(model_path, base_path='./secondary_data'):
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
 
-    for m in range(1, 9):
+    for m in range(1, 10):
         print(f"Aggregating full trials for Movement {m}...")
         all_subject_preds = []
         all_time_axes = []

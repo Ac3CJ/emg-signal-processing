@@ -115,11 +115,11 @@ class EMGInteractivePlotter:
             rectified_teager = np.abs(teager)
             envelope = SignalProcessing.lowpassFilter(rectified_teager, fs=self.fs, cutoff=5.0)
 
-            classic_max = np.percentile(rectified_classic, 99.9) + 1e-6
-            tkeo_max = np.percentile(envelope, 99.9) + 1e-6
+            self.classic_data[c, :] = rectified_classic
+            self.tkeo_data[c, :] = envelope
 
-            self.classic_data[c, :] = np.clip(rectified_classic / classic_max, 0.0, 1.0)
-            self.tkeo_data[c, :] = np.clip(envelope / tkeo_max, 0.0, 1.0)
+        self.classic_data = SignalProcessing.applyGlobalNormalization(self.classic_data, percentiles=(1.0, 99.0))
+        self.tkeo_data = SignalProcessing.applyGlobalNormalization(self.tkeo_data, percentiles=(1.0, 99.0))
 
         # Get windows AND the global curve
         self.classic_bursts, classic_global_curve = get_burst_time_windows(self.classic_data, self.fs)

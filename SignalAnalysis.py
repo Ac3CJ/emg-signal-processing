@@ -4,6 +4,7 @@ import os
 import scipy.io
 import scipy.signal
 from matplotlib.widgets import CheckButtons, Button
+import argparse
 
 import SignalProcessing
 import ControllerConfiguration as Config
@@ -354,10 +355,63 @@ def generate_participant_plots(participant_id, base_data_path=r'.\collected_data
 # ====================================================================================
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="SignalAnalysis: Batch Signal Processing & Visualization",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python SignalAnalysis.py --mode signal                    # Generate all signal images
+  python SignalAnalysis.py --mode ensemble                  # Generate ensemble medians
+  python SignalAnalysis.py --mode participant --pid 3       # Generate participant 3 plots
+  python SignalAnalysis.py --mode all                       # Run all modes (default)
+  python SignalAnalysis.py --mode signal ensemble --pid 5   # Run signal & ensemble, with participant 5 data available
+        """
+    )
+    
+    parser.add_argument(
+        '--mode',
+        nargs='+',
+        choices=['signal', 'ensemble', 'participant', 'all'],
+        default=['all'],
+        help='Select which analysis modes to run (default: all)'
+    )
+    
+    parser.add_argument(
+        '--pid',
+        type=int,
+        default=1,
+        metavar='ID',
+        help='Participant ID for participant mode (default: 1)'
+    )
+    
+    args = parser.parse_args()
+    
+    # Determine which modes to run
+    modes_to_run = args.mode
+    if 'all' in modes_to_run:
+        modes_to_run = ['signal', 'ensemble', 'participant']
+    
     print("=" * 80)
     print("SignalAnalysis: Batch Signal Processing & Visualization")
     print("=" * 80)
-    # generate_all_signal_images(base_data_path=Config.BASE_DATA_PATH, save_path='./signal_plots')
-    generate_median_ensemble_plots(base_data_path=Config.BASE_DATA_PATH, save_path='./signal_plots/ensemble')
-    generate_participant_plots(participant_id=1, base_data_path='.\collected_data', save_path='.\signal_plots/participant', use_edit_suffix=True)
+    print(f"Running modes: {', '.join(modes_to_run)}")
+    if 'participant' in modes_to_run:
+        print(f"Participant ID: {args.pid}")
+    print()
+    
+    if 'signal' in modes_to_run:
+        print("Generating all signal images...")
+        generate_all_signal_images(base_data_path=Config.BASE_DATA_PATH, save_path='./signal_plots')
+        print()
+    
+    if 'ensemble' in modes_to_run:
+        print("Generating median ensemble plots...")
+        generate_median_ensemble_plots(base_data_path=Config.BASE_DATA_PATH, save_path='./signal_plots/ensemble')
+        print()
+    
+    if 'participant' in modes_to_run:
+        print(f"Generating participant {args.pid} plots...")
+        generate_participant_plots(participant_id=args.pid, base_data_path='./collected_data/edit/', save_path='./signal_plots/participant', use_edit_suffix=True)
+        print()
+    
     print("\nSignal plots are ready for use by ImageGridGenerator.py")

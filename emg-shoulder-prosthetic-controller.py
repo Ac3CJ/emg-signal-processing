@@ -17,7 +17,7 @@ import signal
 import SignalProcessing
 from ModelTraining import ShoulderRCNN 
 import ControllerConfiguration as Config
-from SignalReading import ContinuousReadingMode, DataCollectionMode
+# from SignalReading import ContinuousReadingMode, DataCollectionMode
 
 class RealTimeProstheticController:
     def __init__(self, model_path='best_shoulder_rcnn.pth', reading_mode=None, simulate_data=False, sim_file=None):
@@ -35,6 +35,12 @@ class RealTimeProstheticController:
         self.reading_mode = reading_mode
         self.simulate_data = simulate_data
         self.use_hardware = (reading_mode is not None) and (not simulate_data)
+
+        self.live_normalizer = SignalProcessing.RealTimeGlobalNormalizer(
+            num_channels=Config.NUM_CHANNELS, 
+            initial_max=150.0,    # Set this to a typical strong contraction value for MyoWare
+            spike_threshold=3.5   # Any sudden jump 3.5x higher than the max is treated as a dead wire/spike
+        )
         
         # --- PARSE TRIAL NAME FOR TITLES ---
         self.trial_name = "Live Stream"
@@ -282,7 +288,8 @@ class RealTimeProstheticController:
             cleaned_window[i, :] = SignalProcessing.applyStandardSEMGProcessing(self.data_buffer[i, :], fs=Config.FS)
 
             # 2. Normalize to -1 to 1 range (CRITICAL: same as training & validation pipelines)
-            cleaned_window[i, :] = SignalProcessing.normaliseSignal(cleaned_window[i, :], output_range=(-1.0, 1.0))
+            cleaned_window[i, :] = self.live_normalizer.normalize(cleaned_window[i, :])
+            # cleaned_window[i, :] = SignalProcessing.normaliseSignal(cleaned_window[i, :], output_range=(-1.0, 1.0))
         
         input_tensor = torch.tensor(cleaned_window, dtype=torch.float32).unsqueeze(0).to(self.device)
         with torch.no_grad():
@@ -491,6 +498,7 @@ if __name__ == "__main__":
     reading_mode = None
     
     if args.hardware:
+        from SignalReading import ContinuousReadingMode, DataCollectionMode
         if args.collect:
             print("[Main] Initializing Data Collection Mode (hardware will store readings for later saving)")
             reading_mode = DataCollectionMode(collection_name=args.collection_name)

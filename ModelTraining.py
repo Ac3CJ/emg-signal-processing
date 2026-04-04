@@ -622,11 +622,11 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="Train ShoulderRCNN model")
-    parser.add_argument('--mode', type=str, choices=['loso', 'transfer'], default='loso',
-                       help='Training mode: loso (Leave-One-Subject-Out) or transfer (Transfer Learning)')
+    parser.add_argument('--mode', type=str, choices=['loso', 'transfer', 'standard'], default='loso',
+                       help='Training mode: loso (Leave-One-Subject-Out), transfer (Transfer Learning), or standard (80-20 split)')
     parser.add_argument('--pretrained', type=str, default=Config.MODEL_SAVE_PATH,
                        help='Path to pretrained model (for transfer learning)')
-    parser.add_argument('--freeze', action='store_true', default=True,
+    parser.add_argument('--freeze', action='store_true', default=False,
                        help='Freeze backbone layers during transfer learning')
     args = parser.parse_args()
     
@@ -765,3 +765,53 @@ if __name__ == "__main__":
             pretrained_model_path=args.pretrained,
             freeze_layers=args.freeze
         )
+    
+    # ====================================================================================
+    # STANDARD 80-20 TRAINING
+    # ====================================================================================
+    elif args.mode == 'standard':
+        print("Loading dataset with Standard 80-20 Training-Validation Split...")
+        
+        # 1. Load all data from all subjects
+        print("\n[Standard Mode] Loading ALL data (all subjects)...")
+        X_all, y_all = DataPreparation.load_and_prepare_dataset(
+            base_path=Config.BASE_DATA_PATH, 
+            include_subjects=list(range(1, 9))
+        )
+        
+        if len(X_all) == 0:
+            print("ERROR: No data loaded. Check your file paths!")
+        else:
+            # 2. Split 80-20
+            print("\n[Standard Mode] Performing 80-20 train-validation split...")
+            X_train, X_val, y_train, y_val = train_test_split(
+                X_all, y_all, test_size=0.2, random_state=42, shuffle=True
+            )
+            
+            print(f"\n[{'-'*10} DATASET DISTRIBUTION {'-'*10}]")
+            print(f"{'Class Name':<18} | {'Train':<8} | {'Validation':<8}")
+            print("-" * 42)
+            
+            total_train = 0
+            total_val = 0
+            
+            for class_idx, target_angles in Config.TARGET_MAPPING.items():
+                target_vec = np.array(target_angles, dtype=np.float32)
+                
+                # Count how many rows exactly match this target vector
+                train_count = np.sum(np.all(y_train == target_vec, axis=1))
+                val_count = np.sum(np.all(y_val == target_vec, axis=1))
+                
+                total_train += train_count
+                total_val += val_count
+                
+                class_name = f"Movement {class_idx}" if class_idx != 9 else "Rest (Class 9)"
+                print(f"{class_name:<18} | {train_count:<8} | {val_count:<8}")
+                
+            print("-" * 42)
+            print(f"{'TOTAL':<18} | {total_train:<8} | {total_val:<8}\n")
+            
+            print(f"Training on {len(X_train)} samples, Validating on {len(X_val)} samples...")
+            
+            # 3. Train the model
+            trained_model = train_model(X_train, y_train, X_val, y_val, epochs=Config.EPOCHS, batch_size=Config.BATCH_SIZE, patience=Config.PATIENCE)

@@ -73,7 +73,7 @@ scp SignalProcessing.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
 scp emg-shoulder-prosthetic-controller.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
 scp ModelTraining.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
 scp DataPreparation.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
-scp best_shoulder_rcnn.pth %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
+scp %MODEL% %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
 echo [OK] Code files synchronized
 echo.
 

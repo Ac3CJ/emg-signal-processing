@@ -8,6 +8,90 @@ from scipy import ndimage
 from sklearn.decomposition import PCA
 import ControllerConfiguration as Config
 
+# ===============================================================================
+# ================================ NORMALISATION ================================
+# ===============================================================================
+
+class RealTimeGlobalNormalizer:
+    def __init__(self, num_channels=8, initial_max=150.0, spike_threshold=3.0):
+        """
+        Maintains a running global maximum for real-time normalization.
+        
+        Args:
+            initial_max: A conservative starting guess for the max amplitude (mV).
+            spike_threshold: If a new peak is X times larger than the current known max, 
+                             it is rejected as hardware noise.
+        """
+        # Store the running maximums and minimums for each channel
+        self.running_max = np.full(num_channels, initial_max, dtype=np.float32)
+        self.running_min = np.zeros(num_channels, dtype=np.float32)
+        self.spike_threshold = spike_threshold
+
+    def normalize_window(self, window):
+        """
+        Evaluates a new incoming real-time window, safely updates the global maximums, 
+        and normalizes the window.
+        
+        Args:
+            window (np.ndarray): The incoming real-time window, shape (num_channels, window_samples)
+        """
+        # 1. Find the 95th percentile of the current window to ignore single-sample micro-spikes
+        current_window_peaks = np.percentile(window, 95, axis=1)
+        current_window_baselines = np.percentile(window, 5, axis=1)
+
+        # 2. Evaluate and safely update the running maximums
+        for c in range(len(self.running_max)):
+            # Update minimums if we find a cleaner baseline
+            if current_window_baselines[c] < self.running_min[c]:
+                self.running_min[c] = current_window_baselines[c]
+                
+            # Update maximums ONLY if it's a biologically valid contraction
+            if current_window_peaks[c] > self.running_max[c]:
+                # SPIKE REJECTION: Is it a massive, instantaneous hardware spike?
+                if current_window_peaks[c] < (self.running_max[c] * self.spike_threshold):
+                    # Valid contraction! Update our global knowledge.
+                    self.running_max[c] = current_window_peaks[c]
+                # Else: Do nothing. The hardware spike is ignored and the previous max is kept.
+
+        # 3. Normalize the window using the historical global values
+        # Reshape for NumPy broadcasting: (num_channels, 1)
+        scale_factors = (self.running_max - self.running_min)[:, np.newaxis]
+        scale_factors[scale_factors < 1e-6] = 1e-6 # Safety
+        
+        normalized_window = (window - self.running_min[:, np.newaxis]) / scale_factors
+        
+        # 4. Clip to neural network bounds (chops off the rejected hardware spikes)
+        return np.clip(normalized_window, 0.0, 1.0)
+    
+def applyGlobalNormalization(continuous_signal, percentiles=(1.0, 99.0)):
+    """
+    Applies Global Peak Normalization across an entire trial duration.
+    Calculates the 99th percentile for each channel over the whole recording
+    to ignore hardware spikes, and scales the channel to [0.0, 1.0].
+    
+    Args:
+        continuous_signal (np.ndarray): Shape (num_channels, total_samples)
+    """
+    normalized_signal = np.zeros_like(continuous_signal, dtype=np.float32)
+    num_channels = continuous_signal.shape[0]
+    
+    for c in range(num_channels):
+        # 1. Find the robust global maximum for this specific channel
+        channel_max = np.percentile(continuous_signal[c, :], percentiles[1])
+        channel_min = np.percentile(continuous_signal[c, :], percentiles[0])
+        
+        range_span = channel_max - channel_min
+        if range_span < 1e-6:
+            range_span = 1e-6 # Prevent division by zero on dead wires
+            
+        # 2. Scale the entire channel globally
+        scaled = (continuous_signal[c, :] - channel_min) / range_span
+        
+        # 3. Clip the remaining 1% of hardware spikes that exceed 1.0
+        normalized_signal[c, :] = np.clip(scaled, 0.0, 1.0)
+        
+    return normalized_signal
+
 # ====================================================================================
 # ================================ CLASSIC PROCESSING ================================
 # ====================================================================================

@@ -191,10 +191,7 @@ def load_and_prepare_dataset(base_path='./secondary_data', include_subjects=None
                 # 3. Rectify for classic pipeline
                 rectified_classic = np.abs(band)
 
-                # 4. Normalize to -1 to 1 range for NN input
-                normalised = SignalProcessing.normaliseSignal(rectified_classic, output_range=(-1.0, 1.0))
-
-                classic_data[c, :] = normalised
+                classic_data[c, :] = rectified_classic
 
                 # ===== TKEO PIPELINE (for burst detection) =====
                 teager = SignalProcessing.tkeo(band)
@@ -203,6 +200,8 @@ def load_and_prepare_dataset(base_path='./secondary_data', include_subjects=None
 
                 tkeo_max = np.percentile(envelope, 99.9) + 1e-6
                 tkeo_data[c, :] = np.clip(envelope / tkeo_max, 0.0, 1.0)
+
+            classic_data = SignalProcessing.applyGlobalNormalization(classic_data, percentiles=(1.0, 99.0))
 
             active_bursts, rest_valleys = extract_bursts_and_valleys(classic_data, tkeo_data, movement_class=m)
             target_vector = np.array(Config.TARGET_MAPPING[m], dtype=np.float32)

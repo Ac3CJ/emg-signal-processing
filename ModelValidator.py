@@ -12,22 +12,12 @@ def get_predictions_for_file(model, device, file_path):
     raw_data = mat['EMGDATA']
     num_samples = raw_data.shape[1]
 
-    clean_data = np.zeros_like(raw_data, dtype=np.float32)
-    for c in range(Config.NUM_CHANNELS):
-        # ===== SAME PREPROCESSING PIPELINE AS TRAINING =====
-        # 1. Notch filter (remove 50Hz powerline noise)
-        sig = SignalProcessing.notchFilter(raw_data[c, :], fs=Config.FS, notchFreq=Config.NOTCH_FREQ)
-
-        # 2. Bandpass filter (remove movement artifacts and high-freq noise)
-        sig = SignalProcessing.bandpassFilter(sig, fs=Config.FS, lowCut=Config.BANDPASS_LOW, highCut=Config.BANDPASS_HIGH)
-
-        # 3. Rectify
-        sig = np.abs(sig)
-
-        # 4. Normalize to -1 to 1 range (CRITICAL: same as training pipeline)
-        sig = SignalProcessing.normaliseSignal(sig, output_range=(-1.0, 1.0))
-
-        clean_data[c, :] = sig
+    # Create a real-time normalizer (mimics the live controller's persistent state)
+    live_normalizer = SignalProcessing.RealTimeGlobalNormalizer(
+        num_channels=Config.NUM_CHANNELS,
+        initial_max=150.0,
+        spike_threshold=3.5
+    )
 
     predictions = []
     smoothed_pred = np.zeros(Config.NUM_OUTPUTS)
@@ -35,9 +25,22 @@ def get_predictions_for_file(model, device, file_path):
 
     with torch.no_grad():
         for start in window_starts:
-            window = clean_data[:, start:start+Config.WINDOW_SIZE]
-            window_tensor = torch.tensor(window, dtype=torch.float32).unsqueeze(0).to(device)
-
+            # Extract the raw window
+            window_raw = raw_data[:, start:start+Config.WINDOW_SIZE]
+            
+            # ===== SAME PREPROCESSING PIPELINE AS LIVE CONTROLLER =====
+            # 1. Apply standard sEMG processing (notch, bandpass, rectification)
+            cleaned_window = np.zeros_like(window_raw, dtype=np.float32)
+            for c in range(Config.NUM_CHANNELS):
+                cleaned_window[c, :] = SignalProcessing.applyStandardSEMGProcessing(
+                    window_raw[c, :], fs=Config.FS
+                )
+            
+            # 2. Normalize using real-time normalizer with persistent state (CRITICAL: same as live controller)
+            normalized_window = live_normalizer.normalize_window(cleaned_window)
+            
+            # Make prediction
+            window_tensor = torch.tensor(normalized_window, dtype=torch.float32).unsqueeze(0).to(device)
             pred = model(window_tensor).cpu().numpy()[0]
             smoothed_pred = (Config.SMOOTHING_ALPHA * pred) + ((1.0 - Config.SMOOTHING_ALPHA) * smoothed_pred)
             predictions.append(smoothed_pred.copy())
@@ -247,6 +250,10 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
+    print("\n[Model Validator] Starting validation with the following settings:")
+    for arg in vars(args):
+        print(f"  -> {arg}: {getattr(args, arg)}")
+
     if args.validate_ensemble:
         run_ensemble_validation(model_path=args.model, base_path=Config.BASE_DATA_PATH)
     if args.validate_predefined:

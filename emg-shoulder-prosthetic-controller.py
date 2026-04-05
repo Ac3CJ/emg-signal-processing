@@ -209,25 +209,28 @@ class RealTimeProstheticController:
         Returns:
             np.ndarray: Shape (Config.NUM_CHANNELS, num_samples) array of ADC values
         """
+        
+        if not (self.use_hardware or self.simulate_data):
+            return np.random.randn(Config.NUM_CHANNELS, num_samples) * 0.1
+        
         if self.use_hardware:
             # Read from hardware via reading mode
             chunk = self.reading_mode.read_sample_chunk()
             return chunk
-        elif self.simulate_data:
-            # Read from simulation
-            if self.sim_data_stream is not None:
-                end_idx = self.sim_playback_idx + num_samples
-                if end_idx > self.sim_data_stream.shape[1]:
-                    self.sim_playback_idx = 0
-                    end_idx = num_samples
-                chunk = self.sim_data_stream[:, self.sim_playback_idx:end_idx]
-                self.sim_playback_idx = end_idx
-                return chunk
-            else:
-                return np.random.randn(Config.NUM_CHANNELS, num_samples) * 0.1
-        else:
-            # Fallback to random noise
+
+        # If simulating, read from pre-loaded .mat data stream
+        if self.sim_data_stream is None:
             return np.random.randn(Config.NUM_CHANNELS, num_samples) * 0.1
+        
+        end_idx = self.sim_playback_idx + num_samples
+
+        if end_idx > self.sim_data_stream.shape[1]:
+            self.sim_playback_idx = 0
+            end_idx = num_samples
+        chunk = self.sim_data_stream[:, self.sim_playback_idx:end_idx]
+        self.sim_playback_idx = end_idx
+        return chunk
+            
 
     def control_step(self):
         new_data = self.read_new_samples(Config.INCREMENT)
@@ -288,9 +291,8 @@ class RealTimeProstheticController:
             cleaned_window[i, :] = SignalProcessing.applyStandardSEMGProcessing(self.data_buffer[i, :], fs=Config.FS)
 
             # 2. Normalize to -1 to 1 range (CRITICAL: same as training & validation pipelines)
-            cleaned_window[i, :] = self.live_normalizer.normalize(cleaned_window[i, :])
             # cleaned_window[i, :] = SignalProcessing.normaliseSignal(cleaned_window[i, :], output_range=(-1.0, 1.0))
-        
+        cleaned_window = self.live_normalizer.normalize_window(cleaned_window)
         input_tensor = torch.tensor(cleaned_window, dtype=torch.float32).unsqueeze(0).to(self.device)
         with torch.no_grad():
             raw_predictions = self.model(input_tensor).cpu().numpy()[0]

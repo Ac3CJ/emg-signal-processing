@@ -68,6 +68,44 @@ CHANNEL_MAP = dict(
 	)
 )
 
+ROBUST_MIN_MAX_KEYS = ("MIN_MAX", "MIN_MAX_ROBUST")
+
+
+def _contains_none_value(obj: object, depth: int = 0) -> bool:
+	"""Recursively checks for None values inside MATLAB-bound payload objects."""
+	if obj is None:
+		return True
+	if depth > 8:
+		return False
+
+	if isinstance(obj, dict):
+		return any(_contains_none_value(v, depth + 1) for v in obj.values())
+
+	if isinstance(obj, (list, tuple)):
+		return any(_contains_none_value(v, depth + 1) for v in obj)
+
+	if isinstance(obj, np.ndarray) and obj.dtype == object:
+		return any(_contains_none_value(v, depth + 1) for v in obj.flat)
+
+	return False
+
+
+def _sanitize_mat_payload(payload: Dict[str, object]) -> Dict[str, object]:
+	"""
+	Drops fields that contain None (which savemat cannot serialize) and rewrites
+	CHANNEL_MAP to a stable canonical structure.
+	"""
+	sanitized: Dict[str, object] = {}
+	for key, value in payload.items():
+		if str(key).startswith("__"):
+			continue
+		if _contains_none_value(value):
+			continue
+		sanitized[key] = value
+
+	sanitized["CHANNEL_MAP"] = {str(k): str(v) for k, v in CHANNEL_MAP.items()}
+	return sanitized
+
 
 @dataclass(frozen=True)
 class FileSelection:
@@ -154,6 +192,7 @@ class DataRepository:
 		raw_root = self.raw_root(data_type)
 		movements: set[int] = set()
 
+		# print(f"Discovering movements for participant {participant} in '{data_type}' dataset...")
 		if data_type == "secondary":
 			subject_dir = os.path.join(raw_root, f"Soggetto{participant}")
 			if os.path.isdir(subject_dir):
@@ -161,6 +200,7 @@ class DataRepository:
 					match = re.match(r"Movimento(\d+)\.mat$", name)
 					if match:
 						movements.add(int(match.group(1)))
+					# print(f"  Found movement file: {name}")  # Debug log for discovered files
 		elif data_type == "collected":
 			if os.path.isdir(raw_root):
 				pattern = re.compile(rf"P{participant}M(\d+)\.mat$")
@@ -168,10 +208,28 @@ class DataRepository:
 					match = pattern.match(name)
 					if match:
 						movements.add(int(match.group(1)))
+					# print(f"  Found movement file: {name}")  # Debug log for discovered files
 		else:
 			raise ValueError(f"Unknown data type: {data_type}")
 
 		return sorted(movements) if movements else list(range(1, 10))
+
+	def get_all_participant_files(self, participant_id: int, data_type: str) -> List[str]:
+		"""
+		Returns all available movement files for a participant, preferring edited files
+		when present and falling back to raw files.
+		"""
+		file_paths: List[str] = []
+		for movement in self.discover_movements(data_type, participant_id):
+			selection = FileSelection(
+				data_type=data_type,
+				participant=participant_id,
+				movement=movement,
+			)
+			path = self.preferred_input_path(selection)
+			if os.path.exists(path):
+				file_paths.append(path)
+		return sorted(set(file_paths))
 
 
 class EMGSignalProcessor:
@@ -184,6 +242,7 @@ class EMGSignalProcessor:
 		mat = scipy.io.loadmat(file_path)
 		if "EMGDATA" not in mat:
 			raise KeyError(f"'EMGDATA' not found in {file_path}")
+		
 		raw = np.asarray(mat["EMGDATA"], dtype=np.float32)
 		if raw.ndim != 2:
 			raise ValueError(f"Expected 2D EMGDATA, got shape {raw.shape}")
@@ -194,6 +253,45 @@ class EMGSignalProcessor:
 	def load_raw_emg(self, file_path: str) -> np.ndarray:
 		raw, _ = self.load_emg_and_labels(file_path)
 		return raw
+
+	def compute_robust_minmax_matrix(
+		self,
+		file_paths: Sequence[str],
+		percentiles: Tuple[float, float] = (1.0, 99.0),
+		expected_channels: Optional[int] = None,
+	) -> np.ndarray:
+		"""
+		Computes robust channel-wise min/max from a set of files.
+		Returns an array of shape [num_channels, 2] where columns are [min, max].
+		"""
+		all_data: List[np.ndarray] = []
+		num_channels: Optional[int] = expected_channels
+
+		for file_path in file_paths:
+			mat = scipy.io.loadmat(file_path)
+			if "EMGDATA" not in mat:
+				raise KeyError(f"'EMGDATA' not found in {file_path}")
+
+			emg = np.asarray(mat["EMGDATA"], dtype=np.float32)
+			if emg.ndim != 2:
+				raise ValueError(f"Expected 2D EMGDATA, got shape {emg.shape}")
+
+			if num_channels is None:
+				num_channels = emg.shape[0]
+
+			if emg.shape[0] != num_channels:
+				raise ValueError(f"Channel count mismatch in {file_path}")
+
+			all_data.append(emg)
+
+		if not all_data:
+			raise ValueError("No valid EMGDATA found across participant files.")
+
+		massive_array = np.concatenate(all_data, axis=1)
+		robust_mins = np.percentile(massive_array, percentiles[0], axis=1)
+		robust_maxs = np.percentile(massive_array, percentiles[1], axis=1)
+
+		return np.column_stack((robust_mins, robust_maxs)).astype(np.float32)
 
 	@staticmethod
 	def _parse_labels(label_data: object, n_samples: int) -> List[Tuple[int, int]]:
@@ -313,6 +411,103 @@ class EMGSignalProcessor:
 				merged.append((start, end))
 
 		return merged
+
+
+def compute_and_inject_robust_minmax(
+	participant_id: int,
+	data_type: str,
+	repo_path: Optional[str] = None,
+	percentiles: Tuple[float, float] = (1.0, 99.0),
+) -> Tuple[np.ndarray, List[str]]:
+	"""
+	Scans all movement files for a participant, computes robust min/max for each
+	channel, and injects a [num_channels, 2] matrix into participant labelled files.
+
+	Note:
+		This never edits raw files in-place. It always writes to *_labelled.mat.
+
+	Returns:
+		Tuple[np.ndarray, List[str]]: (min_max_matrix, updated_labelled_file_paths)
+	"""
+	repo = DataRepository(base_path=repo_path)
+	processor = EMGSignalProcessor(fs=FS)
+
+	def _load_valid_payload(path: str) -> Optional[Dict[str, object]]:
+		try:
+			mat = scipy.io.loadmat(path)
+		except Exception:
+			return None
+
+		if "EMGDATA" not in mat:
+			return None
+
+		emg = np.asarray(mat["EMGDATA"])
+		if emg.ndim != 2:
+			return None
+
+		return {k: v for k, v in mat.items() if not str(k).startswith("__")}
+
+	source_entries: List[Tuple[FileSelection, str]] = []
+	skipped_issues: List[str] = []
+	for movement in repo.discover_movements(data_type=data_type, participant=participant_id):
+		selection = FileSelection(data_type=data_type, participant=participant_id, movement=movement)
+		edited_path = repo.output_file_path(selection, create_dirs=False)
+		raw_path = repo.raw_file_path(selection)
+
+		chosen_source: Optional[str] = None
+		for candidate in (edited_path, raw_path):
+			if not os.path.exists(candidate):
+				continue
+			if _load_valid_payload(candidate) is not None:
+				chosen_source = candidate
+				break
+
+		if chosen_source is not None:
+			source_entries.append((selection, chosen_source))
+		else:
+			skipped_issues.append(
+				f"Movement {movement}: neither labelled nor raw file was readable ({edited_path} | {raw_path})"
+			)
+
+	if not source_entries:
+		detail = skipped_issues[0] if skipped_issues else "No source files discovered."
+		raise FileNotFoundError(
+			f"No readable movement files found for participant {participant_id} ({data_type}).\n{detail}"
+		)
+
+	source_paths = [source_path for _, source_path in source_entries]
+
+	min_max_matrix = processor.compute_robust_minmax_matrix(
+		file_paths=source_paths,
+		percentiles=percentiles,
+		expected_channels=len(CHANNEL_MAP),
+	)
+
+	updated_files: List[str] = []
+	for selection, source_path in source_entries:
+		output_path = repo.output_file_path(selection, create_dirs=True)
+
+		# Preserve existing labelled payload when it is readable; otherwise seed from source.
+		payload = _load_valid_payload(output_path) if os.path.exists(output_path) else None
+		if payload is None:
+			payload = _load_valid_payload(source_path)
+		if payload is None:
+			continue
+
+		payload = _sanitize_mat_payload(payload)
+
+		for key in ROBUST_MIN_MAX_KEYS:
+			payload[key] = min_max_matrix
+
+		scipy.io.savemat(output_path, payload)
+		updated_files.append(output_path)
+
+	if not updated_files:
+		raise ValueError(
+			f"Failed to inject robust min/max for participant {participant_id} ({data_type}): no writable labelled files."
+		)
+
+	return min_max_matrix, updated_files
 
 
 class AnnotationState:
@@ -840,6 +1035,7 @@ class LabelSignalDataApp(QMainWindow):
 
 		self.load_button = QPushButton("Load File")
 		self.save_button = QPushButton("Save")
+		self.minmax_button = QPushButton("Compute Min/Max")
 		self.prev_channel_button = QPushButton("Prev Channel")
 		self.next_channel_button = QPushButton("Next Channel")
 		self.channel_label = QLabel("Channel: 0")
@@ -858,6 +1054,7 @@ class LabelSignalDataApp(QMainWindow):
 		top_row.addWidget(self.movement_combo)
 		top_row.addWidget(self.load_button)
 		top_row.addWidget(self.save_button)
+		top_row.addWidget(self.minmax_button)
 		top_row.addWidget(self.prev_channel_button)
 		top_row.addWidget(self.next_channel_button)
 		top_row.addWidget(self.channel_label)
@@ -884,6 +1081,7 @@ class LabelSignalDataApp(QMainWindow):
 
 		self.load_button.clicked.connect(self.load_selected_file)
 		self.save_button.clicked.connect(self.save_annotations)
+		self.minmax_button.clicked.connect(self.compute_participant_minmax)
 		self.prev_channel_button.clicked.connect(self.view_previous_channel)
 		self.next_channel_button.clicked.connect(self.view_next_channel)
 		self.delete_button.clicked.connect(self.delete_selected_window)
@@ -998,9 +1196,43 @@ class LabelSignalDataApp(QMainWindow):
 
 		try:
 			raw_data, loaded_labels = self.processor.load_emg_and_labels(load_path)
+		except Exception as primary_exc:
+			raw_fallback_path = self.repo.raw_file_path(selection)
+			can_fallback_to_raw = (
+				os.path.normpath(load_path) != os.path.normpath(raw_fallback_path)
+				and os.path.exists(raw_fallback_path)
+			)
+			if not can_fallback_to_raw:
+				QMessageBox.critical(
+					self,
+					"Load Error",
+					f"Failed to load file ({type(primary_exc).__name__}):\n{primary_exc}\n\nPath:\n{load_path}",
+				)
+				return
+
+			try:
+				raw_data, loaded_labels = self.processor.load_emg_and_labels(raw_fallback_path)
+				load_path = raw_fallback_path
+				QMessageBox.warning(
+					self,
+					"Edited File Unreadable",
+					f"Edited file could not be loaded ({type(primary_exc).__name__}):\n{primary_exc}\n\n"
+					f"Falling back to raw file:\n{raw_fallback_path}",
+				)
+			except Exception as fallback_exc:
+				QMessageBox.critical(
+					self,
+					"Load Error",
+					f"Failed loading edited file and raw fallback.\n\n"
+					f"Edited error ({type(primary_exc).__name__}): {primary_exc}\n"
+					f"Raw error ({type(fallback_exc).__name__}): {fallback_exc}",
+				)
+				return
+
+		try:
 			processed_data = self.processor.preprocess_for_display(raw_data)
 		except Exception as exc:
-			QMessageBox.critical(self, "Load Error", f"Failed to load/process file:\n{exc}")
+			QMessageBox.critical(self, "Process Error", f"Failed to preprocess file:\n{exc}")
 			return
 
 		self.current_selection = selection
@@ -1044,6 +1276,17 @@ class LabelSignalDataApp(QMainWindow):
 
 	@staticmethod
 	def _save_single_labelled_file(out_path: str, emg_data: np.ndarray, labels: np.ndarray, data_type: str = "secondary") -> None:
+		existing_payload: Dict[str, object] = {}
+		if os.path.exists(out_path):
+			try:
+				existing_payload = {
+					k: v for k, v in scipy.io.loadmat(out_path).items() if not str(k).startswith("__")
+				}
+			except Exception:
+				existing_payload = {}
+
+		existing_payload = _sanitize_mat_payload(existing_payload)
+
 		# Center collected data around 0 by subtracting the mean per channel.
 		if data_type == "collected":
 			emg_data = emg_data.copy()  # Avoid modifying the original
@@ -1051,15 +1294,52 @@ class LabelSignalDataApp(QMainWindow):
 				channel_mean = np.mean(emg_data[ch, :])
 				emg_data[ch, :] -= channel_mean
 		
-		channel_map_struct = {str(k): str(v) for k, v in CHANNEL_MAP.items()}
-		scipy.io.savemat(
-			out_path,
+		existing_payload.update(
 			{
 				"EMGDATA": emg_data,
 				"LABELS": labels,
 				"FS": np.array([[FS]], dtype=np.float64),
-				"CHANNEL_MAP": channel_map_struct,
-			},
+				"CHANNEL_MAP": {str(k): str(v) for k, v in CHANNEL_MAP.items()},
+			}
+		)
+		scipy.io.savemat(
+			out_path,
+			existing_payload,
+		)
+
+	def compute_participant_minmax(self) -> None:
+		data_type = self._current_data_type()
+		participant = self._current_participant()
+
+		try:
+			min_max_matrix, updated_files = compute_and_inject_robust_minmax(
+				participant_id=participant,
+				data_type=data_type,
+				repo_path=self.repo.base_path,
+				percentiles=(1.0, 99.0),
+			)
+		except FileNotFoundError as exc:
+			QMessageBox.warning(self, "Min/Max", str(exc))
+			return
+		except ValueError as exc:
+			QMessageBox.warning(self, "Min/Max", f"Could not compute robust min/max:\n{exc}")
+			return
+		except Exception as exc:
+			QMessageBox.critical(
+				self,
+				"Min/Max Error",
+				f"Failed to inject robust min/max ({type(exc).__name__}):\n{exc}",
+			)
+			return
+
+		preview = "\n".join(
+			f"Ch{idx}: min={row[0]:.4f}, max={row[1]:.4f}" for idx, row in enumerate(min_max_matrix)
+		)
+		QMessageBox.information(
+			self,
+			"Min/Max Injected",
+			f"Injected robust min/max into {len(updated_files)} file(s) for participant {participant}.\n\n"
+			f"Stored keys: {', '.join(ROBUST_MIN_MAX_KEYS)}\n\n{preview}",
 		)
 
 	def clear_windows(self) -> None:

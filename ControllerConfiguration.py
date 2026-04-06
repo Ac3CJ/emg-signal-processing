@@ -77,7 +77,7 @@ UDP_PORT = 5005             # Port listening on the Unity/Virtual Environment si
 # ====================================================================================
 # 7. FILE PATHS
 # ====================================================================================
-BASE_DATA_PATH = './secondary_data'
+BASE_DATA_PATH = './biosignal_data'
 MODEL_SAVE_PATH = 'best_shoulder_rcnn.pth'
 
 # ====================================================================================

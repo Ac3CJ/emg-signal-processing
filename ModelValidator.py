@@ -89,7 +89,7 @@ def get_predictions_for_file(model, device, file_path):
 
     return np.array(predictions), np.array(window_starts) / Config.FS
 
-def run_collected_validation(model_path, participant_num, base_path='./collected_data/edit'):
+def run_collected_validation(model_path, participant_num, base_path=Config.COLLECTED_DATA_PATH):
     """
     Validates all movements (M1-M9) for a specific participant using collected data.
     Files are named P{p}M{m}.mat in ./collected_data directory.
@@ -109,7 +109,7 @@ def run_collected_validation(model_path, participant_num, base_path='./collected
     print(f"[Collected Data Validation] Processing Participant P{participant_num}...")
     
     for m in range(1, 10):
-        file_path = os.path.join(base_path, f'P{participant_num}M{m}_edit.mat')
+        file_path = os.path.join(base_path, f'P{participant_num}M{m}_labelled.mat')
         
         if not os.path.exists(file_path):
             print(f"  -> Skipping P{participant_num}M{m}: File not found at {file_path}")

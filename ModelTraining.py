@@ -209,11 +209,71 @@ class ShoulderRCNN(nn.Module):
 # ============================== TRAINING PIPELINE ===================================
 # ====================================================================================
 
-def plot_training_history(train_losses, val_losses):
+def save_dataset_distribution(y_train, y_val, output_file='training_dataset_distribution.txt'):
+    """
+    Calculates and saves the dataset distribution across movements to a text file.
+    
+    Args:
+        y_train (np.ndarray): Training targets [num_samples, 4]
+        y_val (np.ndarray): Validation targets [num_samples, 4]
+        output_file (str): Path to save the distribution file
+    """
+    movement_counts_train = {}
+    movement_counts_val = {}
+    
+    # Count samples per movement in training set
+    for class_idx, target_angles in Config.TARGET_MAPPING.items():
+        target_arr = np.array(target_angles, dtype=np.float32)
+        matches = np.all(np.isclose(y_train, target_arr, atol=0.1), axis=1)
+        movement_counts_train[class_idx] = np.sum(matches)
+    
+    # Count samples per movement in validation set
+    for class_idx, target_angles in Config.TARGET_MAPPING.items():
+        target_arr = np.array(target_angles, dtype=np.float32)
+        matches = np.all(np.isclose(y_val, target_arr, atol=0.1), axis=1)
+        movement_counts_val[class_idx] = np.sum(matches)
+    
+    # Write to file
+    total_train = np.sum(list(movement_counts_train.values()))
+    total_val = np.sum(list(movement_counts_val.values()))
+    
+    with open(output_file, 'w') as f:
+        f.write("=" * 65 + "\n")
+        f.write("DATASET DISTRIBUTION ACROSS MOVEMENTS\n")
+        f.write("=" * 65 + "\n\n")
+        
+        f.write(f"{'Movement':<20} {'Index':<8} {'Train':<12} {'Val':<12} {'Total':<8}\n")
+        f.write("-" * 65 + "\n")
+        
+        for class_idx in sorted(Config.TARGET_MAPPING.keys()):
+            movement_name = Config.MOVEMENT_NAMES.get(class_idx, f"Movement {class_idx}")
+            train_count = movement_counts_train.get(class_idx, 0)
+            val_count = movement_counts_val.get(class_idx, 0)
+            total_count = train_count + val_count
+            
+            f.write(f"{movement_name:<20} {class_idx:<8} {train_count:<12} {val_count:<12} {total_count:<8}\n")
+        
+        f.write("-" * 65 + "\n")
+        f.write(f"{'TOTAL':<20} {'':<8} {total_train:<12} {total_val:<12} {total_train + total_val:<8}\n")
+        f.write("=" * 65 + "\n\n")
+        
+        f.write(f"Training samples: {total_train}\n")
+        f.write(f"Validation samples: {total_val}\n")
+        f.write(f"Total samples: {total_train + total_val}\n")
+        f.write(f"Train/Val split: {100*total_train/(total_train+total_val):.1f}% / {100*total_val/(total_train+total_val):.1f}%\n")
+    
+    print(f"\n[Dataset Distribution] Saved to '{output_file}'")
+
+def plot_training_history(train_losses, val_losses, best_epoch=None):
     """Generates and saves a learning curve plot after training."""
     plt.figure(figsize=(10, 6))
     plt.plot(train_losses, label='Training Loss (RMSE)', color='tab:blue', linewidth=2)
     plt.plot(val_losses, label='Validation Loss (RMSE)', color='tab:orange', linewidth=2)
+
+    # Add vertical dotted line at best epoch if provided
+    if best_epoch is not None:
+        plt.axvline(x=best_epoch, color='tab:red', linestyle=':', linewidth=2, 
+                   label=f'Best Model (Epoch {best_epoch + 1})', alpha=0.8)
 
     plt.title('RCNN Regression Learning Curve', fontsize=16, fontweight='bold')
     plt.xlabel('Epochs', fontsize=12)
@@ -289,6 +349,7 @@ def train_model(X_train, y_train, X_val, y_val, batch_size=Config.BATCH_SIZE, ep
     best_val_loss = float('inf')
     epochs_no_improve = 0
     history_train_mae, history_val_mae = [], []
+    best_epoch = None
     
     # Start training timer
     training_start_time = time.time()
@@ -361,6 +422,7 @@ def train_model(X_train, y_train, X_val, y_val, batch_size=Config.BATCH_SIZE, ep
         if val_mse_loss < best_val_loss:
             best_val_loss = val_mse_loss
             epochs_no_improve = 0
+            best_epoch = epoch
             torch.save(model.state_dict(), Config.MODEL_SAVE_PATH)
             status = f"--> Saved Best Model"
         else:
@@ -389,7 +451,8 @@ def train_model(X_train, y_train, X_val, y_val, batch_size=Config.BATCH_SIZE, ep
     print(f"\n[{'-'*10} TRAINING COMPLETE {'-'*10}]")
     print(f"Total Training Time: {hours}h {minutes}m {seconds}s")
     print(f"Average Time per Epoch: {avg_epoch_time:.2f}s")
-    plot_training_history(history_train_mae, history_val_mae)
+    plot_training_history(history_train_mae, history_val_mae, best_epoch=best_epoch)
+    save_dataset_distribution(y_train, y_val, output_file='training_dataset_distribution.txt')
     
     model.load_state_dict(torch.load(Config.MODEL_SAVE_PATH))
     return model
@@ -519,6 +582,7 @@ def train_transfer_learning(X_train, y_train, X_val, y_val, pretrained_model_pat
     best_val_loss = float('inf')
     epochs_no_improve = 0
     history_train_mae, history_val_mae = [], []
+    best_epoch = None
     
     training_start_time = time.time()
     
@@ -583,6 +647,7 @@ def train_transfer_learning(X_train, y_train, X_val, y_val, pretrained_model_pat
         if val_mse_loss < best_val_loss:
             best_val_loss = val_mse_loss
             epochs_no_improve = 0
+            best_epoch = epoch
             torch.save(model.state_dict(), Config.TRANSFER_LEARNING_MODEL_SAVE_PATH)
             status = f"--> Saved Best Model"
         else:
@@ -609,7 +674,8 @@ def train_transfer_learning(X_train, y_train, X_val, y_val, pretrained_model_pat
     print(f"Total Training Time: {hours}h {minutes}m {seconds}s")
     print(f"Average Time per Epoch: {avg_epoch_time:.2f}s")
     print(f"Best model saved to: {Config.TRANSFER_LEARNING_MODEL_SAVE_PATH}")
-    plot_training_history(history_train_mae, history_val_mae)
+    plot_training_history(history_train_mae, history_val_mae, best_epoch=best_epoch)
+    save_dataset_distribution(y_train, y_val, output_file='transfer_learning_dataset_distribution.txt')
     
     model.load_state_dict(torch.load(Config.TRANSFER_LEARNING_MODEL_SAVE_PATH))
     return model

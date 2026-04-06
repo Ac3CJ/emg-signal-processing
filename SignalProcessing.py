@@ -12,56 +12,47 @@ import ControllerConfiguration as Config
 # ================================ NORMALISATION ================================
 # ===============================================================================
 
-class RealTimeGlobalNormalizer:
-    def __init__(self, num_channels=8, initial_max=150.0, spike_threshold=3.0):
-        """
-        Maintains a running global maximum for real-time normalization.
-        
-        Args:
-            initial_max: A conservative starting guess for the max amplitude (mV).
-            spike_threshold: If a new peak is X times larger than the current known max, 
-                             it is rejected as hardware noise.
-        """
-        # Store the running maximums and minimums for each channel
-        self.running_max = np.full(num_channels, initial_max, dtype=np.float32)
-        self.running_min = np.zeros(num_channels, dtype=np.float32)
-        self.spike_threshold = spike_threshold
+def get_rectified_scale_from_minmax(channel_min, channel_max, eps=1e-6):
+    """
+    Converts robust [min, max] bounds into a rectified-domain normalization scale.
 
-    def normalize_window(self, window):
-        """
-        Evaluates a new incoming real-time window, safely updates the global maximums, 
-        and normalizes the window.
-        
-        Args:
-            window (np.ndarray): The incoming real-time window, shape (num_channels, window_samples)
-        """
-        # 1. Find the 95th percentile of the current window to ignore single-sample micro-spikes
-        current_window_peaks = np.percentile(window, 95, axis=1)
-        current_window_baselines = np.percentile(window, 5, axis=1)
+    If normalization happens after rectification, values are non-negative and the
+    correct scale is the larger absolute magnitude between min and max.
+    """
+    min_mag = abs(float(channel_min))
+    max_mag = abs(float(channel_max))
+    scale = max(min_mag, max_mag)
+    if scale < eps:
+        scale = eps
+    return scale
 
-        # 2. Evaluate and safely update the running maximums
-        for c in range(len(self.running_max)):
-            # Update minimums if we find a cleaner baseline
-            if current_window_baselines[c] < self.running_min[c]:
-                self.running_min[c] = current_window_baselines[c]
-                
-            # Update maximums ONLY if it's a biologically valid contraction
-            if current_window_peaks[c] > self.running_max[c]:
-                # SPIKE REJECTION: Is it a massive, instantaneous hardware spike?
-                if current_window_peaks[c] < (self.running_max[c] * self.spike_threshold):
-                    # Valid contraction! Update our global knowledge.
-                    self.running_max[c] = current_window_peaks[c]
-                # Else: Do nothing. The hardware spike is ignored and the previous max is kept.
 
-        # 3. Normalize the window using the historical global values
-        # Reshape for NumPy broadcasting: (num_channels, 1)
-        scale_factors = (self.running_max - self.running_min)[:, np.newaxis]
-        scale_factors[scale_factors < 1e-6] = 1e-6 # Safety
-        
-        normalized_window = (window - self.running_min[:, np.newaxis]) / scale_factors
-        
-        # 4. Clip to neural network bounds (chops off the rejected hardware spikes)
-        return np.clip(normalized_window, 0.0, 1.0)
+def applyRobustRectifiedNormalization(continuous_signal, min_max_robust, eps=1e-6):
+    """
+    Normalizes rectified signals channel-wise using robust min/max references.
+
+    Args:
+        continuous_signal (np.ndarray): Shape (num_channels, total_samples), expected rectified.
+        min_max_robust (np.ndarray): Shape (num_channels, 2) with [min, max] per channel.
+    """
+    signal = np.asarray(continuous_signal, dtype=np.float32)
+    minmax = np.asarray(min_max_robust, dtype=np.float32)
+
+    if minmax.ndim != 2:
+        raise ValueError(f"Expected 2D min/max matrix, got shape {minmax.shape}")
+    if minmax.shape[1] != 2 and minmax.shape[0] == 2:
+        minmax = minmax.T
+    if minmax.shape != (signal.shape[0], 2):
+        raise ValueError(
+            f"min/max shape mismatch: signal has {signal.shape[0]} channels, min/max shape is {minmax.shape}"
+        )
+
+    normalized = np.zeros_like(signal, dtype=np.float32)
+    for c in range(signal.shape[0]):
+        scale = get_rectified_scale_from_minmax(minmax[c, 0], minmax[c, 1], eps=eps)
+        normalized[c, :] = np.clip(signal[c, :] / scale, 0.0, 1.0)
+
+    return normalized
     
 def applyGlobalNormalization(continuous_signal, percentiles=(1.0, 99.0)):
     """

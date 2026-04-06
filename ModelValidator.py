@@ -6,18 +6,51 @@ import SignalProcessing
 from ModelTraining import ShoulderRCNN 
 import ControllerConfiguration as Config
 
+
+def _extract_robust_minmax(mat_data):
+    for key in ("MIN_MAX_ROBUST", "MIN_MAX"):
+        if key not in mat_data:
+            continue
+        matrix = np.asarray(mat_data[key], dtype=np.float32)
+        if matrix.ndim != 2:
+            continue
+        if matrix.shape == (Config.NUM_CHANNELS, 2):
+            return matrix
+        if matrix.shape == (2, Config.NUM_CHANNELS):
+            return matrix.T
+    return None
+
+
+def _resolve_robust_minmax_for_file(file_path, mat_data):
+    matrix = _extract_robust_minmax(mat_data)
+    if matrix is not None:
+        return matrix
+
+    norm_path = file_path.replace('\\', '/')
+    if norm_path.endswith('_labelled.mat'):
+        return None
+
+    if norm_path.endswith('.mat'):
+        labelled_path = norm_path[:-4] + '_labelled.mat'
+        labelled_path = labelled_path.replace('/raw/', '/edited/')
+        try:
+            import scipy.io
+            labelled_mat = scipy.io.loadmat(labelled_path)
+            return _extract_robust_minmax(labelled_mat)
+        except Exception:
+            return None
+
+    return None
+
 def get_predictions_for_file(model, device, file_path):
     import scipy.io
     mat = scipy.io.loadmat(file_path)
     raw_data = mat['EMGDATA']
     num_samples = raw_data.shape[1]
 
-    # Create a real-time normalizer (mimics the live controller's persistent state)
-    live_normalizer = SignalProcessing.RealTimeGlobalNormalizer(
-        num_channels=Config.NUM_CHANNELS,
-        initial_max=150.0,
-        spike_threshold=3.5
-    )
+    robust_minmax = _resolve_robust_minmax_for_file(file_path, mat)
+    if robust_minmax is None:
+        print(f"[ModelValidator] WARNING: MIN_MAX_ROBUST not found for {file_path}. Falling back to per-window percentiles.")
 
     predictions = []
     smoothed_pred = np.zeros(Config.NUM_OUTPUTS)
@@ -36,8 +69,17 @@ def get_predictions_for_file(model, device, file_path):
                     window_raw[c, :], fs=Config.FS
                 )
             
-            # 2. Normalize using real-time normalizer with persistent state (CRITICAL: same as live controller)
-            normalized_window = SignalProcessing.applyGlobalNormalization(cleaned_window, (1,99))
+            # 2. Normalize using robust participant bounds when available.
+            if robust_minmax is not None:
+                normalized_window = np.zeros_like(cleaned_window, dtype=np.float32)
+                for c in range(Config.NUM_CHANNELS):
+                    scale = SignalProcessing.get_rectified_scale_from_minmax(
+                        robust_minmax[c, 0],
+                        robust_minmax[c, 1],
+                    )
+                    normalized_window[c, :] = np.clip(cleaned_window[c, :] / scale, 0.0, 1.0)
+            else:
+                normalized_window = SignalProcessing.applyGlobalNormalization(cleaned_window, (1,99))
             
             # Make prediction
             window_tensor = torch.tensor(normalized_window, dtype=torch.float32).unsqueeze(0).to(device)

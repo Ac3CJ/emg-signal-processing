@@ -8,6 +8,24 @@ import scipy.interpolate
 import SignalProcessing 
 import ControllerConfiguration as Config
 
+
+def _extract_robust_minmax_matrix(mat_data):
+	"""Extracts a [num_channels, 2] robust min/max matrix from a MAT payload."""
+	for key in ("MIN_MAX_ROBUST", "MIN_MAX"):
+		if key not in mat_data:
+			continue
+
+		matrix = np.asarray(mat_data[key], dtype=np.float32)
+		if matrix.ndim != 2:
+			continue
+
+		if matrix.shape == (Config.NUM_CHANNELS, 2):
+			return matrix
+		if matrix.shape == (2, Config.NUM_CHANNELS):
+			return matrix.T
+
+	return None
+
 # ====================================================================================
 # =========================== DATA AUGMENTATION TECHNIQUES =========================== 
 # ====================================================================================
@@ -235,13 +253,14 @@ def load_and_prepare_dataset(base_path='./biosignal_data/secondary/raw', include
 	print(f"Loading labelled windows from: {labelled_base_path}")
 	print("NOTE: Global normalization computed per participant across all movements.\n")
 
-	# Process each participant separately to compute global normalization
+	# Process each participant separately using participant-level robust min/max.
 	for p in include_subjects:
 		print(f"Processing Subject {p}...")
 		
-		# First pass: Collect all raw data for this participant and compute global norm parameters
+		# First pass: Collect data for this participant and read robust min/max.
 		movements_data = {}
 		movements_labels = {}
+		participant_minmax = None
 		
 		for m in range(1, 10):
 			if hasattr(Config, 'CORRUPTED_TRIALS') and (p, m) in Config.CORRUPTED_TRIALS:
@@ -257,28 +276,34 @@ def load_and_prepare_dataset(base_path='./biosignal_data/secondary/raw', include
 				movements_data[m] = label_mat['EMGDATA']
 
 				movements_labels[m] = label_mat['LABELS']
+
+				if participant_minmax is None:
+					participant_minmax = _extract_robust_minmax_matrix(label_mat)
 			except Exception as e:
 				print(f"  [WARNING] Could not load labels for Movimento{m}: {e}")
 		
 		if not movements_data:
 			continue
-		
-		# Compute global normalization parameters (1st-99th percentile per channel across all movements)
-		global_mins = np.zeros(Config.NUM_CHANNELS, dtype=np.float32)
-		global_maxs = np.zeros(Config.NUM_CHANNELS, dtype=np.float32)
-		
-		for c in range(Config.NUM_CHANNELS):
-			all_channel_values = []
-			for m, raw_data in movements_data.items():
-				all_channel_values.extend(raw_data[c, :].flatten())
-			
-			all_channel_values = np.array(all_channel_values)
-			global_mins[c] = np.percentile(all_channel_values, 1.0)
-			global_maxs[c] = np.percentile(all_channel_values, 99.0)
 
-		print(f"  Global normalization ranges per channel computed.")
+		if participant_minmax is None:
+			print("  [WARNING] MIN_MAX_ROBUST not found. Falling back to participant percentiles.")
+			global_mins = np.zeros(Config.NUM_CHANNELS, dtype=np.float32)
+			global_maxs = np.zeros(Config.NUM_CHANNELS, dtype=np.float32)
+
+			for c in range(Config.NUM_CHANNELS):
+				all_channel_values = []
+				for _, raw_data in movements_data.items():
+					all_channel_values.extend(raw_data[c, :].flatten())
+
+				all_channel_values = np.array(all_channel_values)
+				global_mins[c] = np.percentile(all_channel_values, 1.0)
+				global_maxs[c] = np.percentile(all_channel_values, 99.0)
+
+			participant_minmax = np.column_stack((global_mins, global_maxs)).astype(np.float32)
+
+		print("  Robust normalization ranges per channel loaded.")
 		
-		# Second pass: Preprocess each movement with global normalization
+		# Second pass: Preprocess each movement with robust normalization.
 		for m, raw_data in movements_data.items():
 			classic_data = np.zeros_like(raw_data, dtype=np.float32)
 
@@ -292,16 +317,13 @@ def load_and_prepare_dataset(base_path='./biosignal_data/secondary/raw', include
 
 				# 3. Rectify
 				rectified = np.abs(band)
-				classic_data[c, :] = rectified
 
-			# Apply GLOBAL normalization using participant-level statistics
-			for c in range(Config.NUM_CHANNELS):
-				range_span = global_maxs[c] - global_mins[c]
-				if range_span < 1e-6:
-					range_span = 1e-6
-
-				scaled = (classic_data[c, :] - global_mins[c]) / range_span
-				classic_data[c, :] = np.clip(scaled, 0.0, 1.0)
+				# Normalize after rectification using larger absolute robust bound.
+				scale = SignalProcessing.get_rectified_scale_from_minmax(
+					participant_minmax[c, 0],
+					participant_minmax[c, 1],
+				)
+				classic_data[c, :] = np.clip(rectified / scale, 0.0, 1.0)
 
 			# Extract bursts using labelled windows or automatic fallback
 			if m in movements_labels:
@@ -386,7 +408,7 @@ def load_and_prepare_dataset(base_path='./biosignal_data/secondary/raw', include
 	y_targets = np.array(y_targets, dtype=np.float32)
 
 	print(f"Dataset generated! Total Windows: {X_data.shape[0]}")
-	print(f"Data range after normalization: [{X_data.min():.4f}, {X_data.max():.4f}] (expected: [-1.0, 1.0])\n")
+	print(f"Data range after normalization: [{X_data.min():.4f}, {X_data.max():.4f}] (expected: [0.0, 1.0])\n")
 	return X_data, y_targets
 
 # ====================================================================================
@@ -436,6 +458,17 @@ def load_collected_data(folder_path, labelled_folder_path=None, augment=True):
 				continue
 			
 			raw_data = mat['EMGDATA']
+
+			labelled_file = os.path.join(labelled_folder_path, mat_file.replace('.mat', '_labelled.mat'))
+			label_mat = None
+			robust_minmax = None
+			if os.path.exists(labelled_file):
+				try:
+					label_mat = scipy.io.loadmat(labelled_file)
+					robust_minmax = _extract_robust_minmax_matrix(label_mat)
+				except Exception as e:
+					print(f"  [WARNING] Could not load labelled file for robust min/max: {e}")
+					label_mat = None
 			
 			# Preprocess each channel
 			processed_data = np.zeros_like(raw_data, dtype=np.float32)
@@ -449,13 +482,20 @@ def load_collected_data(folder_path, labelled_folder_path=None, augment=True):
 				# 3. Rectify
 				rectified = np.abs(band)
 
-				# 4. Normalize to 0-1 range for NN input
-				min_val = np.percentile(rectified, 1.0)
-				max_val = np.percentile(rectified, 99.0)
-				range_span = max_val - min_val
-				if range_span < 1e-6:
-					range_span = 1e-6
-				normalised = np.clip((rectified - min_val) / range_span, 0.0, 1.0)
+				# 4. Normalize using MIN_MAX_ROBUST when available.
+				if robust_minmax is not None:
+					scale = SignalProcessing.get_rectified_scale_from_minmax(
+						robust_minmax[c, 0],
+						robust_minmax[c, 1],
+					)
+					normalised = np.clip(rectified / scale, 0.0, 1.0)
+				else:
+					min_val = np.percentile(rectified, 1.0)
+					max_val = np.percentile(rectified, 99.0)
+					range_span = max_val - min_val
+					if range_span < 1e-6:
+						range_span = 1e-6
+					normalised = np.clip((rectified - min_val) / range_span, 0.0, 1.0)
 				processed_data[c, :] = normalised
 			
 			# Extract target from filename (assumes format: "P1M1.mat")
@@ -476,13 +516,11 @@ def load_collected_data(folder_path, labelled_folder_path=None, augment=True):
 				print(f"  [SKIP] {mat_file}: Error parsing filename - {e}")
 				continue
 			
-			# Try to load pre-labelled windows
-			labelled_file = os.path.join(labelled_folder_path, mat_file.replace('.mat', '_labelled.mat'))
+			# Try to use pre-labelled windows
 			windows = []
 			
-			if os.path.exists(labelled_file):
+			if label_mat is not None:
 				try:
-					label_mat = scipy.io.loadmat(labelled_file)
 					if 'LABELS' in label_mat:
 						labels = label_mat['LABELS']
 						bursts, valleys = extract_bursts_from_labels(processed_data, labels)

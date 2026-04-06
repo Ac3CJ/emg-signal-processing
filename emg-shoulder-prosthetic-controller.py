@@ -35,12 +35,6 @@ class RealTimeProstheticController:
         self.reading_mode = reading_mode
         self.simulate_data = simulate_data
         self.use_hardware = (reading_mode is not None) and (not simulate_data)
-
-        self.live_normalizer = SignalProcessing.RealTimeGlobalNormalizer(
-            num_channels=Config.NUM_CHANNELS, 
-            initial_max=150.0,    # Set this to a typical strong contraction value for MyoWare
-            spike_threshold=3.5   # Any sudden jump 3.5x higher than the max is treated as a dead wire/spike
-        )
         
         # --- PARSE TRIAL NAME FOR TITLES ---
         self.trial_name = "Live Stream"
@@ -61,6 +55,9 @@ class RealTimeProstheticController:
                 self.sim_data_stream = None
         else:
             self.sim_data_stream = None
+
+        self.robust_minmax = self._load_runtime_minmax(sim_file)
+        print("[Controller] Using robust normalization matrix from labelled data.")
 
         # --- INITIALIZE DEFAULT HARDWARE MODE IF PROVIDED ---
         if self.use_hardware and self.reading_mode is None:
@@ -230,6 +227,92 @@ class RealTimeProstheticController:
         chunk = self.sim_data_stream[:, self.sim_playback_idx:end_idx]
         self.sim_playback_idx = end_idx
         return chunk
+
+    @staticmethod
+    def _extract_robust_minmax(mat_data):
+        for key in ("MIN_MAX_ROBUST", "MIN_MAX"):
+            if key not in mat_data:
+                continue
+            matrix = np.asarray(mat_data[key], dtype=np.float32)
+            if matrix.ndim != 2:
+                continue
+            if matrix.shape == (Config.NUM_CHANNELS, 2):
+                return matrix
+            if matrix.shape == (2, Config.NUM_CHANNELS):
+                return matrix.T
+        return None
+
+    @staticmethod
+    def _to_labelled_candidate(path):
+        norm_path = os.path.normpath(path)
+        if not norm_path.lower().endswith(".mat"):
+            return norm_path
+        if norm_path.lower().endswith("_labelled.mat"):
+            return norm_path
+
+        base, _ = os.path.splitext(norm_path)
+        labelled = base + "_labelled.mat"
+        raw_segment = f"{os.sep}raw{os.sep}"
+        edited_segment = f"{os.sep}edited{os.sep}"
+        if raw_segment in labelled:
+            labelled = labelled.replace(raw_segment, edited_segment)
+        return labelled
+
+    def _try_load_minmax_from_path(self, file_path):
+        if not file_path or not os.path.exists(file_path):
+            return None
+        try:
+            mat = scipy.io.loadmat(file_path)
+        except Exception:
+            return None
+        return self._extract_robust_minmax(mat)
+
+    def _load_runtime_minmax(self, sim_file=None):
+        candidates = []
+
+        if sim_file:
+            candidates.append(os.path.normpath(sim_file))
+            candidates.append(self._to_labelled_candidate(sim_file))
+
+        candidates.extend(
+            [
+                os.path.join(Config.BASE_DATA_PATH, "collected", "edited", "P1M1_labelled.mat"),
+                os.path.join(Config.BASE_DATA_PATH, "secondary", "edited", "Soggetto1", "Movimento1_labelled.mat"),
+            ]
+        )
+
+        seen = set()
+        for candidate in candidates:
+            candidate = os.path.normpath(candidate)
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            matrix = self._try_load_minmax_from_path(candidate)
+            if matrix is not None:
+                print(f"[Controller] Loaded MIN_MAX_ROBUST from: {candidate}")
+                return matrix
+
+        for edited_root in (
+            os.path.join(Config.BASE_DATA_PATH, "secondary", "edited"),
+            os.path.join(Config.BASE_DATA_PATH, "collected", "edited"),
+        ):
+            if not os.path.isdir(edited_root):
+                continue
+
+            for root, _, files in os.walk(edited_root):
+                for name in files:
+                    if not name.lower().endswith("_labelled.mat"):
+                        continue
+                    candidate = os.path.join(root, name)
+                    matrix = self._try_load_minmax_from_path(candidate)
+                    if matrix is not None:
+                        print(f"[Controller] Loaded MIN_MAX_ROBUST from: {candidate}")
+                        return matrix
+
+        raise FileNotFoundError(
+            "No readable MIN_MAX_ROBUST found in labelled files. "
+            "Run the Compute Min/Max action in LabelSignalData first."
+        )
             
 
     def control_step(self):
@@ -288,11 +371,15 @@ class RealTimeProstheticController:
         for i in range(Config.NUM_CHANNELS):
             # ===== SAME PREPROCESSING PIPELINE AS TRAINING & VALIDATION =====
             # 1. Apply standard sEMG processing (notch, bandpass, rectification)
-            cleaned_window[i, :] = SignalProcessing.applyStandardSEMGProcessing(self.data_buffer[i, :], fs=Config.FS)
+            rectified = SignalProcessing.applyStandardSEMGProcessing(self.data_buffer[i, :], fs=Config.FS)
 
-            # 2. Normalize to -1 to 1 range (CRITICAL: same as training & validation pipelines)
-            # cleaned_window[i, :] = SignalProcessing.normaliseSignal(cleaned_window[i, :], output_range=(-1.0, 1.0))
-        cleaned_window = self.live_normalizer.normalize_window(cleaned_window)
+            # 2. Normalize after rectification using the robust participant scale.
+            scale = SignalProcessing.get_rectified_scale_from_minmax(
+                self.robust_minmax[i, 0],
+                self.robust_minmax[i, 1],
+            )
+            cleaned_window[i, :] = np.clip(rectified / scale, 0.0, 1.0)
+
         input_tensor = torch.tensor(cleaned_window, dtype=torch.float32).unsqueeze(0).to(self.device)
         with torch.no_grad():
             raw_predictions = self.model(input_tensor).cpu().numpy()[0]

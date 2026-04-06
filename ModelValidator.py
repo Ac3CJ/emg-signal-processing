@@ -37,7 +37,7 @@ def get_predictions_for_file(model, device, file_path):
                 )
             
             # 2. Normalize using real-time normalizer with persistent state (CRITICAL: same as live controller)
-            normalized_window = live_normalizer.normalize_window(cleaned_window)
+            normalized_window = SignalProcessing.applyGlobalNormalization(cleaned_window, (1,99))
             
             # Make prediction
             window_tensor = torch.tensor(normalized_window, dtype=torch.float32).unsqueeze(0).to(device)
@@ -119,8 +119,8 @@ def run_fast_validation(model_path, sim_file=None, predefined=False, base_path='
     if predefined:
         print("[Fast Validation] Running predefined benchmark suite...")
         # test_cases = [(6, 1), (7, 2), (2, 3), (6, 4), (7, 5), (5, 6), (6, 7), (8, 8)]
-        test_cases = [(8, 1), (8, 2), (8, 3), (8, 4), (8, 5), (8, 6), (8, 7), (8, 8), (8, 9)]
-        files_to_process = [os.path.join(base_path, f'Soggetto{p}', f'Movimento{m}.mat') for p, m in test_cases]
+        test_cases = [(8, 1), (8, 2), (8, 3), (8, 4), (8, 5), (8, 6), (8, 7), (8, 8), (8, 9), (6, 1), (7, 2), (2, 3), (6, 4), (7, 5), (5, 6), (6, 7)]
+        files_to_process = [os.path.join(base_path, f'Soggetto{p}', f'Movimento{m}_labelled.mat') for p, m in test_cases]
     else:
         if not sim_file:
             print("ERROR: No simulation file provided for validation.")
@@ -195,7 +195,7 @@ def run_ensemble_validation(model_path, base_path='./secondary_data'):
             if hasattr(Config, 'CORRUPTED_TRIALS') and (p, m) in Config.CORRUPTED_TRIALS:
                 continue
                 
-            file_path = os.path.join(base_path, f'Soggetto{p}', f'Movimento{m}.mat')
+            file_path = os.path.join(base_path, f'Soggetto{p}', f'Movimento{m}_labelled.mat')
             if not os.path.exists(file_path): continue
             
             predictions, time_axis = get_predictions_for_file(model, device, file_path)
@@ -255,9 +255,9 @@ if __name__ == "__main__":
         print(f"  -> {arg}: {getattr(args, arg)}")
 
     if args.validate_ensemble:
-        run_ensemble_validation(model_path=args.model, base_path=Config.BASE_DATA_PATH)
+        run_ensemble_validation(model_path=args.model, base_path=Config.SECONDARY_DATA_PATH)
     if args.validate_predefined:
-        run_fast_validation(model_path=args.model, predefined=True, base_path=Config.BASE_DATA_PATH)
+        run_fast_validation(model_path=args.model, predefined=True, base_path=Config.SECONDARY_DATA_PATH)
     if args.validate:
         run_fast_validation(model_path=args.model, sim_file=args.sim_file, predefined=False)
     if args.collected is not None:

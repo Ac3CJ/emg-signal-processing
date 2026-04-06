@@ -135,30 +135,30 @@ class TemporalAttention(nn.Module):
 class ShoulderRCNN(nn.Module):
     def __init__(self, num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS):
         super(ShoulderRCNN, self).__init__()
-        
+
         # --- 1. Multiscale Spatial Feature Extraction (Inception) ---
         self.inception1 = MultiscaleInception1D(in_channels=num_channels, out_channels_per_branch=16)
         self.pool1 = nn.MaxPool1d(kernel_size=5) 
         self.eca1 = ECABlock(kernel_size=3)
         self.drop1 = nn.Dropout(p=0.2)
-        
+
         # Layer 2
         self.inception2 = MultiscaleInception1D(in_channels=48, out_channels_per_branch=32)
         self.pool2 = nn.MaxPool1d(kernel_size=5)
         self.eca2 = ECABlock(kernel_size=3)
         self.drop2 = nn.Dropout(p=0.2)
-        
+
         # --- 3. Temporal Sequence Learning (RNN/LSTM) ---
         self.lstm = nn.LSTM(input_size=96, hidden_size=64, num_layers=1, batch_first=True)
-        
+
         # --- 3.5. Temporal Attention Mechanism ---
         # self.temporal_attention = TemporalAttention(hidden_size=64)
-        
+
         # --- 4. Kinematic Regression Head (DECOUPLED HEADS) ---
         self.fc1 = nn.Linear(64, 32)
         self.relu = nn.ReLU()
         self.drop3 = nn.Dropout(p=0.3)
-        
+
         # Four completely independent linear layers for each degree of freedom
         self.fc_yaw = nn.Linear(32, 1)
         self.fc_pitch = nn.Linear(32, 1)
@@ -167,41 +167,41 @@ class ShoulderRCNN(nn.Module):
 
     def forward(self, x):
         # x shape: (Batch, Channels, Seq_Len)
-        
+
         # Multiscale + Attention Block 1
         x = self.inception1(x)
         x = self.pool1(x)
         x = self.eca1(x)
         x = self.drop1(x)
-        
+
         # Multiscale + Attention Block 2
         x = self.inception2(x)
         x = self.pool2(x)
         x = self.eca2(x)
         x = self.drop2(x)
-        
+
         # Prepare for LSTM
         x = x.permute(0, 2, 1) # Shape: (Batch, Seq_Len, Channels)
-        
+
         # LSTM Temporal processing
         lstm_out, _ = self.lstm(x)
-        
+
         # Temporal Attention Mechanism: Dynamically weight the sequence
         # context_vector = self.temporal_attention(lstm_out)
         last_time_step = lstm_out[:, -1, :]
-        
+
         # Pass through the shared dense layer
         # out = self.fc1(context_vector)
         out = self.fc1(last_time_step)
         out = self.relu(out)
         out = self.drop3(out)
-        
+
         # Pass through the independent, decoupled heads
         yaw = self.fc_yaw(out)
         pitch = self.fc_pitch(out)
         roll = self.fc_roll(out)
         elbow = self.fc_elbow(out)
-        
+
         # Concatenate them back together to match the (Batch, 4) target tensor shape
         return torch.cat([yaw, pitch, roll, elbow], dim=1)
 
@@ -214,13 +214,13 @@ def plot_training_history(train_losses, val_losses):
     plt.figure(figsize=(10, 6))
     plt.plot(train_losses, label='Training Loss (RMSE)', color='tab:blue', linewidth=2)
     plt.plot(val_losses, label='Validation Loss (RMSE)', color='tab:orange', linewidth=2)
-    
+
     plt.title('RCNN Regression Learning Curve', fontsize=16, fontweight='bold')
     plt.xlabel('Epochs', fontsize=12)
     plt.ylabel('Root Mean Squared Error', fontsize=12)
     plt.legend(fontsize=12)
     plt.grid(True, linestyle='--', alpha=0.7)
-    
+
     plt.tight_layout()
     plt.savefig('training_loss_curve.png', dpi=150)
     print("\n[Visuals] Learning curve saved as 'training_loss_curve.png'.")
@@ -234,10 +234,10 @@ def train_model(X_train, y_train, X_val, y_val, batch_size=Config.BATCH_SIZE, ep
     y_train_tensor = torch.tensor(y_train, dtype=torch.float32)
     X_val_tensor = torch.tensor(X_val, dtype=torch.float32)
     y_val_tensor = torch.tensor(y_val, dtype=torch.float32)
-    
+
     train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
     val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
-    
+
     # --- OPTIMIZATION 1: Multi-threaded Data Loading ---
     # Parallel workers keep GPU fed with data while computation happens
     train_loader = DataLoader(
@@ -250,16 +250,16 @@ def train_model(X_train, y_train, X_val, y_val, batch_size=Config.BATCH_SIZE, ep
         num_workers=Config.NUM_DATA_WORKERS, pin_memory=True,
         persistent_workers=True, prefetch_factor=Config.PREFETCH_FACTOR
     )
-    
+
     device = torch.device("xpu" if torch.xpu.is_available() else "cpu")
     device_type = "xpu" if torch.xpu.is_available() else "cpu"
-        
+
     print(f"\n[{'-'*10} SYSTEM CHECK {'-'*10}]")
     print(f"Training on device: {device}")
     print(f"Batch size: {batch_size} | Gradient Accumulation: {Config.GRADIENT_ACCUMULATION_STEPS}")
     print(f"Data workers: {Config.NUM_DATA_WORKERS} | Prefetch: {Config.PREFETCH_FACTOR}")
     print(f"Effective batch size: {batch_size * Config.GRADIENT_ACCUMULATION_STEPS}")
-    
+
     model = ShoulderRCNN(num_channels=X_train.shape[1], num_outputs=y_train.shape[1]).to(device)
 
     # optimizer_criterion = AsymmetricKinematicLoss(phantom_pitch_penalty=5.0) 
@@ -639,14 +639,14 @@ if __name__ == "__main__":
         # 1. Load training data (subjects 1-7)
         print("\n[LOSO Fold] Loading TRAINING data (Subjects 1-7)...")
         X_train, y_train = DataPreparation.load_and_prepare_dataset(
-            base_path=Config.BASE_DATA_PATH, 
+            base_path=Config.SECONDARY_DATA_PATH, 
             include_subjects=list(range(1, 8))
         )
         
         # 2. Load validation data (subject 8)
         print("\n[LOSO Fold] Loading VALIDATION data (Subject 8)...")
         X_val, y_val = DataPreparation.load_and_prepare_dataset(
-            base_path=Config.BASE_DATA_PATH, 
+            base_path=Config.SECONDARY_DATA_PATH, 
             include_subjects=[8]
         )
         

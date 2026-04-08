@@ -17,34 +17,6 @@ if hasattr(torch.backends, 'xpu'):
     torch.backends.xpu.benchmark = True  # Auto-tune Intel GPU kernels
 
 # ====================================================================================
-# ============================== CUSTOM LOSS FUNCTION ================================
-# ====================================================================================
-
-class AsymmetricKinematicLoss(nn.Module):
-    def __init__(self, phantom_pitch_penalty=5.0):
-        super(AsymmetricKinematicLoss, self).__init__()
-        self.penalty = phantom_pitch_penalty
-        # reduction='none' allows us to modify specific elements before averaging
-        self.mse = nn.MSELoss(reduction='none') 
-
-    def forward(self, predictions, targets):
-        # 1. Calculate standard MSE for all 4 DOFs: [Yaw, Pitch, Roll, Elbow]
-        base_loss = self.mse(predictions, targets)
-
-        # 2. Create a mask: It equals 1.0 ONLY when the Target Pitch is exactly 0.0
-        # (This isolates pure Flexion, Hyperextension, and Rest)
-        zero_pitch_mask = (targets[:, 1] == 0.0).float()
-
-        # 3. Apply the heavy penalty multiplier ONLY to the Pitch error
-        pitch_loss = base_loss[:, 1] * (1.0 + (self.penalty - 1.0) * zero_pitch_mask)
-
-        # 4. Replace the original Pitch loss with the newly penalized one
-        base_loss[:, 1] = pitch_loss
-
-        # 5. Return the final scalar loss so the network can backpropagate
-        return base_loss.mean()
-
-# ====================================================================================
 # ============================== RCNN MODEL DEFINITION ===============================
 # ====================================================================================
 
@@ -284,7 +256,7 @@ def plot_training_history(train_losses, val_losses, best_epoch=None):
     plt.tight_layout()
     plt.savefig('training_loss_curve.png', dpi=150)
     print("\n[Visuals] Learning curve saved as 'training_loss_curve.png'.")
-    plt.show()
+    # plt.show()
 
 def train_model(X_train, y_train, X_val, y_val, batch_size=Config.BATCH_SIZE, epochs=Config.EPOCHS, patience=Config.PATIENCE):
     """
@@ -301,7 +273,7 @@ def train_model(X_train, y_train, X_val, y_val, batch_size=Config.BATCH_SIZE, ep
     # --- OPTIMIZATION 1: Multi-threaded Data Loading ---
     # Parallel workers keep GPU fed with data while computation happens
     train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True, 
+        train_dataset, batch_size=batch_size, shuffle=False, 
         num_workers=Config.NUM_DATA_WORKERS, pin_memory=True,
         persistent_workers=True, prefetch_factor=Config.PREFETCH_FACTOR
     )
@@ -706,14 +678,16 @@ if __name__ == "__main__":
         print("\n[LOSO Fold] Loading TRAINING data (Subjects 1-7)...")
         X_train, y_train = DataPreparation.load_and_prepare_dataset(
             base_path=Config.SECONDARY_DATA_PATH, 
-            include_subjects=list(range(1, 8))
+            include_subjects=list(range(1, 8)),
+            include_noise_aug=True,
         )
         
         # 2. Load validation data (subject 8)
         print("\n[LOSO Fold] Loading VALIDATION data (Subject 8)...")
         X_val, y_val = DataPreparation.load_and_prepare_dataset(
             base_path=Config.SECONDARY_DATA_PATH, 
-            include_subjects=[8]
+            include_subjects=[8],
+            include_noise_aug=False,
         )
         
         if len(X_train) == 0 or len(X_val) == 0:
@@ -760,7 +734,8 @@ if __name__ == "__main__":
         print("\n[Transfer Learning] Loading TRAINING data from collected_data/training...")
         X_train, y_train = DataPreparation.load_collected_data(
             folder_path='./collected_data/training',
-            augment=True
+            augment=True,
+            include_noise_aug=True,
         )
         
         if X_train is None or len(X_train) == 0:
@@ -772,14 +747,16 @@ if __name__ == "__main__":
         print("\n[Transfer Learning] Checking for validation data in collected_data/validation...")
         X_val_collected, y_val_collected = DataPreparation.load_collected_data(
             folder_path='./collected_data/validation',
-            augment=True
+            augment=True,
+            include_noise_aug=False,
         )
         
         # 3. Always load secondary data validation (from subject 8 LOSO fold)
         print("\n[Transfer Learning] Loading VALIDATION data from secondary_data (Subject 8)...")
         X_val_secondary, y_val_secondary = DataPreparation.load_and_prepare_dataset(
             base_path=Config.BASE_DATA_PATH,
-            include_subjects=[8]
+            include_subjects=[8],
+            include_noise_aug=False,
         )
         
         if X_val_secondary is None or len(X_val_secondary) == 0:
@@ -842,7 +819,8 @@ if __name__ == "__main__":
         print("\n[Standard Mode] Loading ALL data (all subjects)...")
         X_all, y_all = DataPreparation.load_and_prepare_dataset(
             base_path=Config.BASE_DATA_PATH, 
-            include_subjects=list(range(1, 9))
+            include_subjects=list(range(1, 9)),
+            include_noise_aug=True,
         )
         
         if len(X_all) == 0:
@@ -851,7 +829,7 @@ if __name__ == "__main__":
             # 2. Split 80-20
             print("\n[Standard Mode] Performing 80-20 train-validation split...")
             X_train, X_val, y_train, y_val = train_test_split(
-                X_all, y_all, test_size=0.2, random_state=42, shuffle=True
+                X_all, y_all, test_size=0.2, random_state=42, shuffle=False
             )
             
             print(f"\n[{'-'*10} DATASET DISTRIBUTION {'-'*10}]")

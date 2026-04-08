@@ -68,7 +68,7 @@ def get_predictions_for_file(model, device, file_path):
                 cleaned_window[c, :] = SignalProcessing.applyStandardSEMGProcessing(
                     window_raw[c, :], fs=Config.FS
                 )
-            
+
             # 2. Normalize using robust participant bounds when available.
             if robust_minmax is not None:
                 normalized_window = np.zeros_like(cleaned_window, dtype=np.float32)
@@ -292,7 +292,7 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    print("\n[Model Validator] Starting validation with the following settings:")
+    # print("\n[Model Validator] Starting validation with the following settings:")
     for arg in vars(args):
         print(f"  -> {arg}: {getattr(args, arg)}")
 

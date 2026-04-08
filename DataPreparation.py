@@ -69,6 +69,59 @@ def apply_mixup(data_arrays, targets, alpha=0.2, mixup_ratio=0.5):
         
     return data_arrays + mixed_arrays, targets + mixed_targets
 
+
+def _resolve_training_noise_magnitudes():
+	"""Returns valid positive training noise magnitudes from configuration."""
+	configured = getattr(Config, "TRAINING_NOISE_MAGNITUDES", [0.000005, 0.00001])
+	magnitudes = []
+
+	for value in configured:
+		try:
+			mag = float(value)
+		except (TypeError, ValueError):
+			continue
+		if mag > 0.0:
+			magnitudes.append(mag)
+
+	return magnitudes
+
+
+def _generate_raw_training_variants(raw_data, include_noise_aug=True, exclude_windows=None):
+	"""
+	Builds raw-data variants for augmentation.
+
+	Always includes the clean signal. If enabled, adds noisy copies with configured
+	magnitudes across ALL channels. Noise is injected before filtering.
+	
+	Args:
+		raw_data (np.ndarray): Raw signal data of shape (num_channels, num_samples).
+		include_noise_aug (bool): Whether to include noise augmentation variants.
+		exclude_windows (list): List of (start_idx, end_idx) tuples defining contraction windows.
+                         If provided, noise will NOT be injected in these windows.
+                         If None, noise is injected everywhere.
+	"""
+	base = np.asarray(raw_data, dtype=np.float32)
+	variants = [base]
+
+	if not include_noise_aug:
+		return variants
+
+	noise_magnitudes = _resolve_training_noise_magnitudes()
+	if len(noise_magnitudes) == 0:
+		return variants
+
+	channels = list(range(base.shape[0]))
+	for mag in noise_magnitudes:
+		noisy = SignalProcessing.inject_white_noise_to_channels_excluding_windows(
+			signal=base,
+			target_channels=channels,
+			noise_magnitudes=[mag] * len(channels),
+			exclude_windows=exclude_windows,
+		)
+		variants.append(np.asarray(noisy, dtype=np.float32))
+
+	return variants
+
 # ====================================================================================
 # ============================== EXTRACTION PIPELINE =================================
 # ====================================================================================
@@ -221,7 +274,12 @@ def slice_into_windows(data_array, increment, window_size):
             windows.append(window.astype(np.float32))
     return windows
 
-def load_and_prepare_dataset(base_path='./biosignal_data/secondary/raw', include_subjects=None, labelled_base_path=None):
+def load_and_prepare_dataset(
+	base_path='./biosignal_data/secondary/raw',
+	include_subjects=None,
+	labelled_base_path=None,
+	include_noise_aug=True,
+):
 	"""
 	Load and prepare dataset using pre-labelled contraction windows when available.
 	Global normalization is computed per participant across all movements.
@@ -230,6 +288,7 @@ def load_and_prepare_dataset(base_path='./biosignal_data/secondary/raw', include
 		base_path (str): Path to raw data directory (e.g., ./biosignal_data/secondary/raw)
 		include_subjects (list): List of subject IDs to include. If None, includes all subjects (1-8).
 		labelled_base_path (str): Path to edited/labelled data directory. If None, infers from base_path.
+		include_noise_aug (bool): If True, adds configured noisy raw variants before filtering.
 	
 	Returns:
 		tuple: (X_data, y_targets) - preprocessed training data
@@ -251,6 +310,10 @@ def load_and_prepare_dataset(base_path='./biosignal_data/secondary/raw', include
 	print(f"Include subjects: {include_subjects}")
 	print(f"Loading raw files from: {base_path}")
 	print(f"Loading labelled windows from: {labelled_base_path}")
+	if include_noise_aug:
+		print(f"Noise augmentation BEFORE filtering enabled: {_resolve_training_noise_magnitudes()}")
+	else:
+		print("Noise augmentation BEFORE filtering disabled")
 	print("NOTE: Global normalization computed per participant across all movements.\n")
 
 	# Process each participant separately using participant-level robust min/max.
@@ -305,49 +368,61 @@ def load_and_prepare_dataset(base_path='./biosignal_data/secondary/raw', include
 		
 		# Second pass: Preprocess each movement with robust normalization.
 		for m, raw_data in movements_data.items():
-			classic_data = np.zeros_like(raw_data, dtype=np.float32)
+			# Extract labels for noise exclusion (skip for rest movement 9)
+			exclude_windows = None
+			if m != 9 and m in movements_labels and movements_labels[m] is not None:
+				labels = movements_labels[m]
+				if labels.ndim == 1:
+					labels = labels.reshape(-1, 2)
+				if labels.shape[0] > 0:
+					exclude_windows = labels
+			
+			raw_variants = _generate_raw_training_variants(raw_data, include_noise_aug=include_noise_aug, exclude_windows=exclude_windows)
 
-			for c in range(Config.NUM_CHANNELS):
-				# ===== PREPROCESSING PIPELINE FOR NN ANALYSIS =====
-				# 1. Notch filter (remove 50Hz powerline noise)
-				notch = SignalProcessing.notchFilter(raw_data[c, :], fs=Config.FS, notchFreq=Config.NOTCH_FREQ)
+			for raw_variant in raw_variants:
+				classic_data = np.zeros_like(raw_variant, dtype=np.float32)
 
-				# 2. Bandpass filter (remove movement artifacts and high-freq noise)
-				band = SignalProcessing.bandpassFilter(notch, fs=Config.FS, lowCut=Config.BANDPASS_LOW, highCut=Config.BANDPASS_HIGH)
-
-				# 3. Rectify
-				rectified = np.abs(band)
-
-				# Normalize after rectification using larger absolute robust bound.
-				scale = SignalProcessing.get_rectified_scale_from_minmax(
-					participant_minmax[c, 0],
-					participant_minmax[c, 1],
-				)
-				classic_data[c, :] = np.clip(rectified / scale, 0.0, 1.0)
-
-			# Extract bursts using labelled windows or automatic fallback
-			if m in movements_labels:
-				active_bursts, rest_valleys = extract_bursts_from_labels(classic_data, movements_labels[m])
-			else:
-				# Fallback: Use automatic detection (requires TKEO pipeline)
-				tkeo_data = np.zeros_like(raw_data, dtype=np.float32)
 				for c in range(Config.NUM_CHANNELS):
-					notch = SignalProcessing.notchFilter(raw_data[c, :], fs=Config.FS, notchFreq=Config.NOTCH_FREQ)
+					# ===== PREPROCESSING PIPELINE FOR NN ANALYSIS =====
+					# 1. Notch filter (remove 50Hz powerline noise)
+					notch = SignalProcessing.notchFilter(raw_variant[c, :], fs=Config.FS, notchFreq=Config.NOTCH_FREQ)
+
+					# 2. Bandpass filter (remove movement artifacts and high-freq noise)
 					band = SignalProcessing.bandpassFilter(notch, fs=Config.FS, lowCut=Config.BANDPASS_LOW, highCut=Config.BANDPASS_HIGH)
-					teager = SignalProcessing.tkeo(band)
-					rectified_teager = np.abs(teager)
-					envelope = SignalProcessing.lowpassFilter(rectified_teager, fs=Config.FS, cutoff=5.0)
-					tkeo_max = np.percentile(envelope, 99.9) + 1e-6
-					tkeo_data[c, :] = np.clip(envelope / tkeo_max, 0.0, 1.0)
 
-				active_bursts, rest_valleys = extract_bursts_and_valleys(classic_data, tkeo_data, movement_class=m)
+					# 3. Rectify
+					rectified = np.abs(band)
 
-			target_vector = np.array(Config.TARGET_MAPPING[m], dtype=np.float32)
+					# Normalize after rectification using larger absolute robust bound.
+					scale = SignalProcessing.get_rectified_scale_from_minmax(
+						participant_minmax[c, 0],
+						participant_minmax[c, 1],
+					)
+					classic_data[c, :] = np.clip(rectified / scale, 0.0, 1.0)
 
-			for b in active_bursts:
-				all_active_bursts.append(b)
-				all_active_targets.append(target_vector)
-			all_rest_valleys.extend(rest_valleys)
+				# Extract bursts using labelled windows or automatic fallback
+				if m in movements_labels:
+					active_bursts, rest_valleys = extract_bursts_from_labels(classic_data, movements_labels[m])
+				else:
+					# Fallback: Use automatic detection (requires TKEO pipeline)
+					tkeo_data = np.zeros_like(raw_variant, dtype=np.float32)
+					for c in range(Config.NUM_CHANNELS):
+						notch = SignalProcessing.notchFilter(raw_variant[c, :], fs=Config.FS, notchFreq=Config.NOTCH_FREQ)
+						band = SignalProcessing.bandpassFilter(notch, fs=Config.FS, lowCut=Config.BANDPASS_LOW, highCut=Config.BANDPASS_HIGH)
+						teager = SignalProcessing.tkeo(band)
+						rectified_teager = np.abs(teager)
+						envelope = SignalProcessing.lowpassFilter(rectified_teager, fs=Config.FS, cutoff=5.0)
+						tkeo_max = np.percentile(envelope, 99.9) + 1e-6
+						tkeo_data[c, :] = np.clip(envelope / tkeo_max, 0.0, 1.0)
+
+					active_bursts, rest_valleys = extract_bursts_and_valleys(classic_data, tkeo_data, movement_class=m)
+
+				target_vector = np.array(Config.TARGET_MAPPING[m], dtype=np.float32)
+
+				for b in active_bursts:
+					all_active_bursts.append(b)
+					all_active_targets.append(target_vector)
+				all_rest_valleys.extend(rest_valleys)
 		
 		print(f"  Subject {p} processed. Bursts: {len(all_active_bursts)}, Rest valleys: {len(all_rest_valleys)}.")
 
@@ -415,7 +490,7 @@ def load_and_prepare_dataset(base_path='./biosignal_data/secondary/raw', include
 # ============================== COLLECTED DATA LOADING ==============================
 # ====================================================================================
 
-def load_collected_data(folder_path, labelled_folder_path=None, augment=True):
+def load_collected_data(folder_path, labelled_folder_path=None, augment=True, include_noise_aug=True):
 	"""
 	Load and preprocess collected .mat files using pre-labelled windows when available.
 	
@@ -423,6 +498,7 @@ def load_collected_data(folder_path, labelled_folder_path=None, augment=True):
 		folder_path (str): Path to folder containing raw .mat files
 		labelled_folder_path (str): Path to folder containing labelled .mat files. If None, infers from folder_path.
 		augment (bool): Whether to apply augmentation (magnitude warping)
+		include_noise_aug (bool): Whether to add configured noisy raw variants before filtering.
 	
 	Returns:
 		tuple: (X_data, y_data) or (None, None) if no files found
@@ -444,6 +520,10 @@ def load_collected_data(folder_path, labelled_folder_path=None, augment=True):
 	
 	print(f"[Collected Data] Found {len(mat_files)} .mat files in {folder_path}")
 	print(f"[Collected Data] Using labelled windows from: {labelled_folder_path}")
+	if include_noise_aug and augment:
+		print(f"[Collected Data] Noise augmentation BEFORE filtering enabled: {_resolve_training_noise_magnitudes()}")
+	else:
+		print("[Collected Data] Noise augmentation BEFORE filtering disabled")
 	
 	X_data = []
 	y_data = []
@@ -470,95 +550,119 @@ def load_collected_data(folder_path, labelled_folder_path=None, augment=True):
 					print(f"  [WARNING] Could not load labelled file for robust min/max: {e}")
 					label_mat = None
 			
-			# Preprocess each channel
-			processed_data = np.zeros_like(raw_data, dtype=np.float32)
-			for c in range(Config.NUM_CHANNELS):
-				# 1. Notch filter (remove 50Hz powerline noise)
-				notch = SignalProcessing.notchFilter(raw_data[c, :], fs=Config.FS, notchFreq=Config.NOTCH_FREQ)
-
-				# 2. Bandpass filter
-				band = SignalProcessing.bandpassFilter(notch, fs=Config.FS, lowCut=Config.BANDPASS_LOW, highCut=Config.BANDPASS_HIGH)
-
-				# 3. Rectify
-				rectified = np.abs(band)
-
-				# 4. Normalize using MIN_MAX_ROBUST when available.
-				if robust_minmax is not None:
-					scale = SignalProcessing.get_rectified_scale_from_minmax(
-						robust_minmax[c, 0],
-						robust_minmax[c, 1],
-					)
-					normalised = np.clip(rectified / scale, 0.0, 1.0)
-				else:
-					min_val = np.percentile(rectified, 1.0)
-					max_val = np.percentile(rectified, 99.0)
-					range_span = max_val - min_val
-					if range_span < 1e-6:
-						range_span = 1e-6
-					normalised = np.clip((rectified - min_val) / range_span, 0.0, 1.0)
-				processed_data[c, :] = normalised
-			
 			# Extract target from filename (assumes format: "P1M1.mat")
-			try:
-				filename_base = os.path.splitext(mat_file)[0]  # Remove .mat
-				match = re.search(r'P(\d+)M(\d+)', filename_base)
-				if match:
-					movement_id = int(match.group(2))
-					if movement_id in Config.TARGET_MAPPING:
-						target_vector = np.array(Config.TARGET_MAPPING[movement_id], dtype=np.float32)
-					else:
-						print(f"  [SKIP] {mat_file}: Unknown movement ID {movement_id}")
-						continue
+			filename_base = os.path.splitext(mat_file)[0]  # Remove .mat
+			match = re.search(r'P(\d+)M(\d+)', filename_base)
+			if match:
+				movement_id = int(match.group(2))
+				if movement_id in Config.TARGET_MAPPING:
+					target_vector = np.array(Config.TARGET_MAPPING[movement_id], dtype=np.float32)
 				else:
-					print(f"  [SKIP] {mat_file}: Could not parse movement from filename. Use format P#M#.mat")
+					print(f"  [SKIP] {mat_file}: Unknown movement ID {movement_id}")
 					continue
-			except Exception as e:
-				print(f"  [SKIP] {mat_file}: Error parsing filename - {e}")
+			else:
+				print(f"  [SKIP] {mat_file}: Could not parse movement from filename. Use format P#M#.mat")
 				continue
 			
-			# Try to use pre-labelled windows
-			windows = []
+			# Extract labels for noise exclusion (skip for rest movement 9)
+			exclude_windows = None
+			if label_mat is not None and movement_id != 9:
+				if 'LABELS' in label_mat:
+					labels = label_mat['LABELS']
+					if labels.ndim == 1:
+						labels = labels.reshape(-1, 2)
+					if labels.shape[0] > 0:
+						exclude_windows = labels
 			
-			if label_mat is not None:
-				try:
-					if 'LABELS' in label_mat:
-						labels = label_mat['LABELS']
-						bursts, valleys = extract_bursts_from_labels(processed_data, labels)
-						
-						# Use bursts + valleys for windowing
-						all_contraction_data = bursts + valleys
-						for data in all_contraction_data:
-							windows.extend(slice_into_windows(data, Config.INCREMENT, Config.WINDOW_SIZE))
-						
-						print(f"  [LOADED] {mat_file} (using {len(bursts)} labelled windows → {len(windows)} samples)")
+			raw_variants = _generate_raw_training_variants(
+				raw_data,
+				include_noise_aug=(include_noise_aug and augment),
+				exclude_windows=exclude_windows,
+			)
+			
+			variant_windows_total = 0
+			for raw_variant in raw_variants:
+				processed_data = np.zeros_like(raw_variant, dtype=np.float32)
+				
+				for c in range(Config.NUM_CHANNELS):
+					# ===== PREPROCESSING PIPELINE FOR NN ANALYSIS =====
+					# 1. Notch filter (remove 50Hz powerline noise)
+					notch = SignalProcessing.notchFilter(raw_variant[c, :], fs=Config.FS, notchFreq=Config.NOTCH_FREQ)
+
+					# 2. Bandpass filter (remove movement artifacts and high-freq noise)
+					band = SignalProcessing.bandpassFilter(notch, fs=Config.FS, lowCut=Config.BANDPASS_LOW, highCut=Config.BANDPASS_HIGH)
+
+					# 3. Rectify
+					rectified = np.abs(band)
+
+					# 4. Normalize using MIN_MAX_ROBUST when available.
+					if robust_minmax is not None:
+						scale = SignalProcessing.get_rectified_scale_from_minmax(
+							robust_minmax[c, 0],
+							robust_minmax[c, 1],
+						)
+						normalised = np.clip(rectified / scale, 0.0, 1.0)
 					else:
-						# No LABELS in file, fall back to slicing
+						min_val = np.percentile(rectified, 1.0)
+						max_val = np.percentile(rectified, 99.0)
+						range_span = max_val - min_val
+						if range_span < 1e-6:
+							range_span = 1e-6
+						normalised = np.clip((rectified - min_val) / range_span, 0.0, 1.0)
+					processed_data[c, :] = normalised
+
+				# Try to use pre-labelled windows
+				windows = []
+
+				if label_mat is not None:
+					try:
+						if 'LABELS' in label_mat:
+							labels = label_mat['LABELS']
+							bursts, valleys = extract_bursts_from_labels(processed_data, labels)
+
+							# Use bursts + valleys for windowing
+							all_contraction_data = bursts + valleys
+							for data in all_contraction_data:
+								windows.extend(slice_into_windows(data, Config.INCREMENT, Config.WINDOW_SIZE))
+						else:
+							# No LABELS in file, fall back to slicing
+							windows = slice_into_windows(processed_data, Config.INCREMENT, Config.WINDOW_SIZE)
+					except Exception as e:
+						print(f"  [WARNING] Could not use labelled file, falling back to slicing: {e}")
 						windows = slice_into_windows(processed_data, Config.INCREMENT, Config.WINDOW_SIZE)
-				except Exception as e:
-					print(f"  [WARNING] Could not use labelled file, falling back to slicing: {e}")
+				else:
+					# No labelled file found, slice entire signal
 					windows = slice_into_windows(processed_data, Config.INCREMENT, Config.WINDOW_SIZE)
-			else:
-				# No labelled file found, slice entire signal
-				windows = slice_into_windows(processed_data, Config.INCREMENT, Config.WINDOW_SIZE)
-			
-			if len(windows) == 0:
+
+				variant_windows_total += len(windows)
+				if len(windows) == 0:
+					continue
+
+				for w in windows:
+					X_data.append(w)
+					y_data.append(target_vector)
+
+					# Apply augmentation if requested
+					if augment:
+						X_data.append(apply_magnitude_warping(w, sigma=0.25))
+						y_data.append(target_vector)
+						X_data.append(apply_magnitude_warping(w, sigma=0.40))
+						y_data.append(target_vector)
+
+			if variant_windows_total == 0:
 				print(f"  [SKIP] {mat_file}: No windows extracted")
 				continue
-			
-			for w in windows:
-				X_data.append(w)
-				y_data.append(target_vector)
-				
-				# Apply augmentation if requested
-				if augment:
-					X_data.append(apply_magnitude_warping(w, sigma=0.25))
-					y_data.append(target_vector)
-					X_data.append(apply_magnitude_warping(w, sigma=0.40))
-					y_data.append(target_vector)
+
+			if label_mat is not None and 'LABELS' in label_mat:
+				print(f"  [LOADED] {mat_file} (using labelled windows across {len(raw_variants)} variants → {variant_windows_total} samples)")
 			
 			if not os.path.exists(labelled_file):
-				print(f"  [LOADED] {mat_file} ({len(windows)} windows → {len(windows) * (3 if augment else 1)} samples)")
-			
+				print(
+					f"  [LOADED] {mat_file} "
+					f"({variant_windows_total} windows across {len(raw_variants)} variants "
+					f"→ {variant_windows_total * (3 if augment else 1)} samples)"
+				)
+		
 		except Exception as e:
 			print(f"  [ERROR] {mat_file}: {e}")
 			continue

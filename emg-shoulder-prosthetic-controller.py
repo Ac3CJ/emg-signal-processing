@@ -82,9 +82,7 @@ class RealTimeProstheticController:
         self.is_calibrated = False
         self.norm_baseline = np.zeros(Config.NUM_CHANNELS, dtype=np.float32)
         self.norm_max = np.ones(Config.NUM_CHANNELS, dtype=np.float32)
-        self.runtime_minmax = None
-        self.normalization_mode = "global_percentile"
-        self._initialize_calibration_state(sim_file=sim_file)
+        self._initialize_calibration_state()
 
         # --- INITIALIZE DEFAULT HARDWARE MODE IF PROVIDED ---
         if self.use_hardware and self.reading_mode is None:
@@ -176,90 +174,32 @@ class RealTimeProstheticController:
         print("[Controller] Participant defaulting to P1.")
         return "P1"
 
-    def _persist_mvc_minmax(self, minmax_matrix):
-        """Persist MVC-derived min/max as both MIN_MAX_ROBUST and MIN_MAX."""
-        try:
-            mvc_payload = scipy.io.loadmat(self.mvc_file_path)
-            if "EMGDATA" not in mvc_payload:
-                print(f"[Controller] WARNING: EMGDATA missing in MVC source file: {self.mvc_file_path}")
-                return
-            emg_data = np.asarray(mvc_payload["EMGDATA"], dtype=np.float32)
-        except Exception as e:
-            print(f"[Controller] WARNING: Could not read MVC source for persistence: {e}")
-            return
-
-        matrix = np.asarray(minmax_matrix, dtype=np.float32)
-        targets = [
-            self.mvc_file_path,
-            self._to_labelled_candidate(self.mvc_file_path),
-        ]
-
-        for target_path in targets:
-            try:
-                target_dir = os.path.dirname(target_path)
-                if target_dir:
-                    os.makedirs(target_dir, exist_ok=True)
-
-                payload = {
-                    "EMGDATA": emg_data,
-                    "MIN_MAX_ROBUST": matrix,
-                    "MIN_MAX": matrix,
-                }
-
-                if os.path.exists(target_path):
-                    existing = scipy.io.loadmat(target_path)
-                    for key, value in existing.items():
-                        if key.startswith("__") or key in payload:
-                            continue
-                        payload[key] = value
-
-                scipy.io.savemat(target_path, payload)
-                print(f"[Controller] Stored MIN_MAX_ROBUST in: {target_path}")
-            except Exception as e:
-                print(f"[Controller] WARNING: Could not write MIN_MAX_ROBUST to {target_path}: {e}")
-
-    def _initialize_calibration_state(self, sim_file=None):
+    def _initialize_calibration_state(self):
         mvc_raw_dir = os.path.join(Config.BASE_DATA_PATH, "collected", "raw")
         self.mvc_file_path = os.path.normpath(os.path.join(mvc_raw_dir, f"{self.participant_id}M10.mat"))
-        self.runtime_minmax = None
-        self.normalization_mode = "global_percentile"
 
-        if os.path.exists(self.mvc_file_path):
-            try:
-                baseline, max_vals = SignalProcessing.compute_participant_minmax(
-                    mvc_file_path=self.mvc_file_path,
-                    fs=Config.FS,
-                    percentiles=(1.0, 99.0),
-                    expected_channels=Config.NUM_CHANNELS,
-                )
-                self.norm_baseline = baseline.astype(np.float32)
-                self.norm_max = max_vals.astype(np.float32)
-                self.is_calibrated = True
-                self.normalization_mode = "mvc"
-
-                minmax_matrix = np.column_stack((self.norm_baseline, self.norm_max)).astype(np.float32)
-                self._persist_mvc_minmax(minmax_matrix)
-
-                print(f"[Controller] State: CALIBRATED using MVC file: {self.mvc_file_path}")
-                return
-            except Exception as e:
-                self.is_calibrated = False
-                print(f"[Controller] MVC file found but calibration failed: {e}")
-                print("[Controller] Falling back to legacy MIN_MAX_ROBUST mode.")
-        else:
-            print(f"[Controller] MVC file not found ({self.mvc_file_path}). Falling back to legacy MIN_MAX_ROBUST mode.")
+        if not os.path.exists(self.mvc_file_path):
+            self.is_calibrated = False
+            print(f"[Controller] State: UNCALIBRATED (missing MVC file: {self.mvc_file_path})")
+            return
 
         try:
-            self.runtime_minmax = self._load_runtime_minmax(sim_file=sim_file)
-            self.normalization_mode = "legacy_minmax"
+            baseline, max_vals = SignalProcessing.compute_participant_minmax(
+                mvc_file_path=self.mvc_file_path,
+                fs=Config.FS,
+                percentiles=(1.0, 99.0),
+                expected_channels=Config.NUM_CHANNELS,
+            )
+        except Exception as e:
             self.is_calibrated = False
-            print("[Controller] State: UNCALIBRATED (legacy MIN_MAX_ROBUST fallback active)")
-        except FileNotFoundError:
-            self.runtime_minmax = None
-            self.normalization_mode = "global_percentile"
-            self.is_calibrated = False
-            print("[Controller] State: UNCALIBRATED (using global percentile fallback)")
+            print(f"[Controller] MVC file found but calibration failed: {e}")
+            print("[Controller] State: UNCALIBRATED")
+            return
 
+        self.norm_baseline = baseline.astype(np.float32)
+        self.norm_max = max_vals.astype(np.float32)
+        self.is_calibrated = True
+        print(f"[Controller] State: CALIBRATED using MVC file: {self.mvc_file_path}")
 
     def read_new_samples(self, num_samples):
         """
@@ -551,17 +491,8 @@ class RealTimeProstheticController:
                 if self.is_calibrated:
                     denominator = (self.norm_max - self.norm_baseline)[:, np.newaxis] + 1e-8
                     emg_window = (rectified_window - self.norm_baseline[:, np.newaxis]) / denominator
-                    emg_window = np.clip(emg_window, 0.0, 1.0)
-                elif self.runtime_minmax is not None:
-                    emg_window = np.zeros_like(rectified_window, dtype=np.float32)
-                    for c in range(Config.NUM_CHANNELS):
-                        scale = SignalProcessing.get_rectified_scale_from_minmax(
-                            self.runtime_minmax[c, 0],
-                            self.runtime_minmax[c, 1],
-                        )
-                        emg_window[c, :] = np.clip(rectified_window[c, :] / scale, 0.0, 1.0)
                 else:
-                    emg_window = SignalProcessing.applyGlobalNormalization(rectified_window, (1.0, 99.0))
+                    emg_window = rectified_window
                 
                 # Inference
                 input_tensor = torch.tensor(emg_window, dtype=torch.float32).unsqueeze(0).to(self.device)

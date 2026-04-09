@@ -122,6 +122,8 @@ class SignalViewerGUI(QMainWindow):
         self.toggle_bandpass.setChecked(True)
         self.toggle_rectify = QCheckBox("Rectify")
         self.toggle_rectify.setChecked(True)
+        self.toggle_normalize = QCheckBox("Normalize")
+        self.toggle_normalize.setChecked(True)
 
         self.toggle_show_windows = QCheckBox("Show Windows")
         self.toggle_show_windows.setChecked(False)
@@ -156,6 +158,7 @@ class SignalViewerGUI(QMainWindow):
         controls_layout.addWidget(self.toggle_notch, 2, 2)
         controls_layout.addWidget(self.toggle_bandpass, 2, 3)
         controls_layout.addWidget(self.toggle_rectify, 2, 4)
+        controls_layout.addWidget(self.toggle_normalize, 2, 5)
 
         controls_layout.addWidget(self.toggle_show_windows, 3, 1)
         controls_layout.addWidget(self.toggle_lock_spec_colors, 3, 2)
@@ -212,6 +215,7 @@ class SignalViewerGUI(QMainWindow):
         self.toggle_notch.toggled.connect(lambda _=None: self._refresh_view())
         self.toggle_bandpass.toggled.connect(lambda _=None: self._refresh_view())
         self.toggle_rectify.toggled.connect(lambda _=None: self._refresh_view())
+        self.toggle_normalize.toggled.connect(lambda _=None: self._refresh_view())
         self.toggle_show_windows.toggled.connect(lambda _=None: self._refresh_view())
         self.toggle_lock_spec_colors.toggled.connect(lambda _=None: self._refresh_view())
 
@@ -379,7 +383,12 @@ class SignalViewerGUI(QMainWindow):
             working[ch, :] = np.asarray(sig, dtype=np.float32)
 
         pre_norm = working.copy()
-        normalized = self._normalize_for_alignment(pre_norm, loaded.robust_minmax)
+
+        # Apply normalization only if toggle is enabled
+        if self.toggle_normalize.isChecked():
+            normalized = self._normalize_for_alignment(pre_norm, loaded.robust_minmax)
+        else:
+            normalized = pre_norm.copy()
 
         return normalized, pre_norm, clean_raw, noisy_raw
 

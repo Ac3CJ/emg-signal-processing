@@ -420,8 +420,12 @@ def compute_and_inject_robust_minmax(
 	percentiles: Tuple[float, float] = (1.0, 99.0),
 ) -> Tuple[np.ndarray, List[str]]:
 	"""
-	Scans all movement files for a participant, computes robust min/max for each
-	channel, and injects a [num_channels, 2] matrix into participant labelled files.
+	Computes robust min/max for a participant and injects a [num_channels, 2]
+	matrix into participant labelled files.
+
+	For collected data, this is MVC-aware:
+	- If PxM10.mat exists and is readable, min/max is computed from that MVC trial.
+	- Otherwise, it falls back to the legacy participant-wide aggregation.
 
 	Note:
 		This never edits raw files in-place. It always writes to *_labelled.mat.
@@ -475,13 +479,47 @@ def compute_and_inject_robust_minmax(
 			f"No readable movement files found for participant {participant_id} ({data_type}).\n{detail}"
 		)
 
-	source_paths = [source_path for _, source_path in source_entries]
+	min_max_matrix: Optional[np.ndarray] = None
 
-	min_max_matrix = processor.compute_robust_minmax_matrix(
-		file_paths=source_paths,
-		percentiles=percentiles,
-		expected_channels=len(CHANNEL_MAP),
-	)
+	# MVC-first behavior for collected data when PxM10.mat exists.
+	if data_type == "collected":
+		mvc_selection = FileSelection(data_type="collected", participant=participant_id, movement=10)
+		mvc_candidates = [
+			repo.raw_file_path(mvc_selection),
+			repo.output_file_path(mvc_selection, create_dirs=False),
+		]
+
+		mvc_source: Optional[str] = None
+		for candidate in mvc_candidates:
+			if not os.path.exists(candidate):
+				continue
+			if _load_valid_payload(candidate) is not None:
+				mvc_source = candidate
+				break
+
+		if mvc_source is not None:
+			try:
+				baseline, max_vals = SignalProcessing.compute_participant_minmax(
+					mvc_file_path=mvc_source,
+					fs=FS,
+					percentiles=percentiles,
+					expected_channels=len(CHANNEL_MAP),
+				)
+				min_max_matrix = np.column_stack((baseline, max_vals)).astype(np.float32)
+				print(f"[MinMax] Using MVC trial for participant {participant_id}: {mvc_source}")
+			except Exception as exc:
+				print(
+					f"[MinMax] MVC trial found for participant {participant_id} but failed "
+					f"({exc}). Falling back to participant-wide robust min/max."
+				)
+
+	if min_max_matrix is None:
+		source_paths = [source_path for _, source_path in source_entries]
+		min_max_matrix = processor.compute_robust_minmax_matrix(
+			file_paths=source_paths,
+			percentiles=percentiles,
+			expected_channels=len(CHANNEL_MAP),
+		)
 
 	updated_files: List[str] = []
 	for selection, source_path in source_entries:

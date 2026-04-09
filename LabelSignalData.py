@@ -451,6 +451,63 @@ def compute_and_inject_robust_minmax(
 
 		return {k: v for k, v in mat.items() if not str(k).startswith("__")}
 
+	def _compute_windowed_minmax_from_entries(
+		entries: Sequence[Tuple[FileSelection, str]],
+		skip_rest_movement: bool = True,
+	) -> Tuple[Optional[np.ndarray], int, int]:
+		"""
+		Computes robust min/max from labelled window segments only.
+
+		Returns:
+			(Optional[np.ndarray], int, int):
+				(matrix or None, contributing_file_count, contributing_sample_count)
+		"""
+		windowed_blocks: List[np.ndarray] = []
+		contributing_files = 0
+
+		for selection, source_path in entries:
+			if skip_rest_movement and selection.movement == 9:
+				continue
+
+			payload = _load_valid_payload(source_path)
+			if payload is None:
+				continue
+
+			emg = np.asarray(payload.get("EMGDATA"), dtype=np.float32)
+			if emg.ndim != 2:
+				continue
+			if emg.shape[0] != len(CHANNEL_MAP):
+				raise ValueError(
+					f"Channel count mismatch in {source_path}: "
+					f"expected {len(CHANNEL_MAP)}, got {emg.shape[0]}"
+				)
+
+			windows = processor._parse_labels(payload.get("LABELS"), n_samples=emg.shape[1])
+			if not windows:
+				continue
+
+			segments: List[np.ndarray] = []
+			for start, end in windows:
+				start_i = max(0, int(start))
+				end_i = min(emg.shape[1], int(end))
+				if end_i > start_i:
+					segments.append(emg[:, start_i:end_i])
+
+			if not segments:
+				continue
+
+			windowed_blocks.append(np.concatenate(segments, axis=1))
+			contributing_files += 1
+
+		if not windowed_blocks:
+			return None, 0, 0
+
+		stacked = np.concatenate(windowed_blocks, axis=1)
+		robust_mins = np.percentile(stacked, percentiles[0], axis=1)
+		robust_maxs = np.percentile(stacked, percentiles[1], axis=1)
+		matrix = np.column_stack((robust_mins, robust_maxs)).astype(np.float32)
+		return matrix, contributing_files, int(stacked.shape[1])
+
 	source_entries: List[Tuple[FileSelection, str]] = []
 	skipped_issues: List[str] = []
 	for movement in repo.discover_movements(data_type=data_type, participant=participant_id):
@@ -499,14 +556,26 @@ def compute_and_inject_robust_minmax(
 
 		if mvc_source is not None:
 			try:
-				baseline, max_vals = SignalProcessing.compute_participant_minmax(
-					mvc_file_path=mvc_source,
-					fs=FS,
-					percentiles=percentiles,
-					expected_channels=len(CHANNEL_MAP),
+				windowed_mvc_matrix, mvc_files, mvc_samples = _compute_windowed_minmax_from_entries(
+					[(mvc_selection, mvc_source)],
+					skip_rest_movement=False,
 				)
-				min_max_matrix = np.column_stack((baseline, max_vals)).astype(np.float32)
-				print(f"[MinMax] Using MVC trial for participant {participant_id}: {mvc_source}")
+
+				if windowed_mvc_matrix is not None:
+					min_max_matrix = windowed_mvc_matrix
+					print(
+						f"[MinMax] Using labelled MVC windows for participant {participant_id}: "
+						f"{mvc_files} file(s), {mvc_samples} samples"
+					)
+				else:
+					baseline, max_vals = SignalProcessing.compute_participant_minmax(
+						mvc_file_path=mvc_source,
+						fs=FS,
+						percentiles=percentiles,
+						expected_channels=len(CHANNEL_MAP),
+					)
+					min_max_matrix = np.column_stack((baseline, max_vals)).astype(np.float32)
+					print(f"[MinMax] Using MVC trial for participant {participant_id}: {mvc_source}")
 			except Exception as exc:
 				print(
 					f"[MinMax] MVC trial found for participant {participant_id} but failed "
@@ -514,12 +583,28 @@ def compute_and_inject_robust_minmax(
 				)
 
 	if min_max_matrix is None:
-		source_paths = [source_path for _, source_path in source_entries]
-		min_max_matrix = processor.compute_robust_minmax_matrix(
-			file_paths=source_paths,
-			percentiles=percentiles,
-			expected_channels=len(CHANNEL_MAP),
+		windowed_matrix, windowed_files, windowed_samples = _compute_windowed_minmax_from_entries(
+			source_entries,
+			skip_rest_movement=True,
 		)
+
+		if windowed_matrix is not None:
+			min_max_matrix = windowed_matrix
+			print(
+				f"[MinMax] Using labelled windows for participant {participant_id}: "
+				f"{windowed_files} file(s), {windowed_samples} samples (rest movement excluded)."
+			)
+		else:
+			source_paths = [source_path for _, source_path in source_entries]
+			min_max_matrix = processor.compute_robust_minmax_matrix(
+				file_paths=source_paths,
+				percentiles=percentiles,
+				expected_channels=len(CHANNEL_MAP),
+			)
+			print(
+				f"[MinMax] No labelled windows found for participant {participant_id}. "
+				"Falling back to whole-trial robust min/max."
+			)
 
 	updated_files: List[str] = []
 	for selection, source_path in source_entries:
@@ -640,7 +725,6 @@ class AnnotationState:
 		if not self.windows:
 			return np.empty((0, 2), dtype=np.int32)
 		return np.asarray(sorted(self.windows, key=lambda w: w[0]), dtype=np.int32)
-
 
 class SignalCanvas(FigureCanvas):
 	"""Matplotlib canvas with stacked plots, minimap span, and edge-drag interactions."""
@@ -1354,7 +1438,7 @@ class LabelSignalDataApp(QMainWindow):
 				participant_id=participant,
 				data_type=data_type,
 				repo_path=self.repo.base_path,
-				percentiles=(1.0, 99.0),
+				percentiles=(0.25, 99.75),
 			)
 		except FileNotFoundError as exc:
 			QMessageBox.warning(self, "Min/Max", str(exc))

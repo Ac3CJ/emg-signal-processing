@@ -490,7 +490,13 @@ def load_and_prepare_dataset(
 # ============================== COLLECTED DATA LOADING ==============================
 # ====================================================================================
 
-def load_collected_data(folder_path, labelled_folder_path=None, augment=True, include_noise_aug=True):
+def load_collected_data(
+	folder_path,
+	labelled_folder_path=None,
+	augment=True,
+	include_noise_aug=True,
+	include_participants=None,
+):
 	"""
 	Load and preprocess collected .mat files using pre-labelled windows when available.
 	
@@ -499,6 +505,8 @@ def load_collected_data(folder_path, labelled_folder_path=None, augment=True, in
 		labelled_folder_path (str): Path to folder containing labelled .mat files. If None, infers from folder_path.
 		augment (bool): Whether to apply augmentation (magnitude warping)
 		include_noise_aug (bool): Whether to add configured noisy raw variants before filtering.
+		include_participants (list[int] | None): Optional participant IDs to include.
+			Only files matching P#M#.mat for selected participants are loaded.
 	
 	Returns:
 		tuple: (X_data, y_data) or (None, None) if no files found
@@ -517,6 +525,36 @@ def load_collected_data(folder_path, labelled_folder_path=None, augment=True, in
 	if len(mat_files) == 0:
 		print(f"[WARNING] No .mat files found in {folder_path}")
 		return None, None
+
+	participant_filter = None
+	if include_participants is not None:
+		participant_filter = set()
+		for participant in include_participants:
+			try:
+				participant_filter.add(int(participant))
+			except (TypeError, ValueError):
+				continue
+
+		filtered_files = []
+		skipped_non_matching = 0
+		for file_name in mat_files:
+			match = re.search(r'P(\d+)M(\d+)', os.path.splitext(file_name)[0], flags=re.IGNORECASE)
+			if not match:
+				skipped_non_matching += 1
+				continue
+
+			participant_id = int(match.group(1))
+			if participant_id in participant_filter:
+				filtered_files.append(file_name)
+
+		mat_files = filtered_files
+		print(f"[Collected Data] Participant filter enabled: {sorted(participant_filter)}")
+		if skipped_non_matching > 0:
+			print(f"[Collected Data] Skipped {skipped_non_matching} files that did not match P#M# naming.")
+
+		if len(mat_files) == 0:
+			print(f"[WARNING] No files matched selected participants in {folder_path}")
+			return None, None
 	
 	print(f"[Collected Data] Found {len(mat_files)} .mat files in {folder_path}")
 	print(f"[Collected Data] Using labelled windows from: {labelled_folder_path}")

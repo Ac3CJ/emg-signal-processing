@@ -7,6 +7,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 import time
+import os
+import re
 
 import DataPreparation
 import ControllerConfiguration as Config
@@ -283,8 +285,7 @@ def train_model(X_train, y_train, X_val, y_val, batch_size=Config.BATCH_SIZE, ep
         persistent_workers=True, prefetch_factor=Config.PREFETCH_FACTOR
     )
 
-    device = torch.device("xpu" if torch.xpu.is_available() else "cpu")
-    device_type = "xpu" if torch.xpu.is_available() else "cpu"
+    device, device_type = _resolve_training_device()
 
     print(f"\n[{'-'*10} SYSTEM CHECK {'-'*10}]")
     print(f"Training on device: {device}")
@@ -504,8 +505,7 @@ def train_transfer_learning(X_train, y_train, X_val, y_val, pretrained_model_pat
         persistent_workers=True, prefetch_factor=Config.PREFETCH_FACTOR
     )
     
-    device = torch.device("xpu" if torch.xpu.is_available() else "cpu")
-    device_type = "xpu" if torch.xpu.is_available() else "cpu"
+    device, device_type = _resolve_training_device()
     
     print(f"\n[{'-'*10} TRANSFER LEARNING SETUP {'-'*10}]")
     print(f"Loading pretrained model from: {pretrained_model_path}")
@@ -652,6 +652,67 @@ def train_transfer_learning(X_train, y_train, X_val, y_val, pretrained_model_pat
     model.load_state_dict(torch.load(Config.TRANSFER_LEARNING_MODEL_SAVE_PATH))
     return model
 
+
+def _resolve_training_device():
+    """Selects the best available training device in priority order."""
+    if torch.cuda.is_available():
+        return torch.device("cuda"), "cuda"
+
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        return torch.device("xpu"), "xpu"
+
+    return torch.device("cpu"), "cpu"
+
+
+def _parse_participant_list(participant_list_raw):
+    """Parses participant IDs from strings like "[1,2,4]" or "1,2,4"."""
+    if participant_list_raw is None:
+        return None
+
+    text = str(participant_list_raw).strip()
+    if not text:
+        raise ValueError("--collected_train_participants was provided but is empty.")
+
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1].strip()
+
+    tokens = [token for token in re.split(r"[,\s]+", text) if token]
+    if len(tokens) == 0:
+        raise ValueError("No participant IDs were found in --collected_train_participants.")
+
+    participants = []
+    for token in tokens:
+        if not token.isdigit():
+            raise ValueError(
+                f"Invalid participant token '{token}'. Use numeric IDs, e.g. [1,2,4]."
+            )
+
+        participant_id = int(token)
+        if participant_id <= 0:
+            raise ValueError(f"Participant IDs must be positive. Got: {participant_id}")
+
+        if participant_id not in participants:
+            participants.append(participant_id)
+
+    return participants
+
+
+def _discover_collected_participants(folder_path):
+    """Discovers participant IDs from collected files named P#M#.mat."""
+    if not os.path.isdir(folder_path):
+        return []
+
+    participants = set()
+    for file_name in os.listdir(folder_path):
+        if not file_name.lower().endswith(".mat") or file_name.lower().endswith("_labelled.mat"):
+            continue
+
+        match = re.search(r"P(\d+)M(\d+)", os.path.splitext(file_name)[0], flags=re.IGNORECASE)
+        if match:
+            participants.add(int(match.group(1)))
+
+    return sorted(participants)
+
 # ====================================================================================
 # ============================== DEBUG/DUMMY TEST ====================================
 # ====================================================================================
@@ -666,6 +727,13 @@ if __name__ == "__main__":
                        help='Path to pretrained model (for transfer learning)')
     parser.add_argument('--freeze', action='store_true', default=False,
                        help='Freeze backbone layers during transfer learning')
+    parser.add_argument(
+        '--collected_train_participants',
+        type=str,
+        default=None,
+        help='Optional participant list for collected transfer split, e.g. "[1,2,4]". '
+             'These participants are used for training; remaining collected participants are used for validation.',
+    )
     args = parser.parse_args()
     
     # ====================================================================================
@@ -729,27 +797,88 @@ if __name__ == "__main__":
         print("Starting Transfer Learning Training...")
         print(f"Pretrained model: {args.pretrained}")
         print(f"Freeze backbone: {args.freeze}")
-        
-        # 1. Load collected training data
-        print("\n[Transfer Learning] Loading TRAINING data from collected_data/training...")
-        X_train, y_train = DataPreparation.load_collected_data(
-            folder_path='./collected_data/training',
-            augment=True,
-            include_noise_aug=True,
-        )
+
+        try:
+            selected_train_participants = _parse_participant_list(args.collected_train_participants)
+        except ValueError as exc:
+            print(f"\n✗ ERROR: {exc}")
+            exit(1)
+
+        # Optional collected-data LOSO split by participant IDs.
+        if selected_train_participants is not None:
+            collected_raw_path = os.path.join(Config.BASE_DATA_PATH, 'collected', 'raw')
+            collected_edited_path = os.path.join(Config.BASE_DATA_PATH, 'collected', 'edited')
+
+            available_participants = _discover_collected_participants(collected_raw_path)
+            if len(available_participants) == 0:
+                print(f"\n✗ ERROR: No collected files were found at {collected_raw_path}")
+                exit(1)
+
+            missing_participants = sorted(set(selected_train_participants) - set(available_participants))
+            if missing_participants:
+                print(
+                    f"\n✗ ERROR: Requested training participants not found in collected data: {missing_participants}"
+                )
+                print(f"Available collected participants: {available_participants}")
+                exit(1)
+
+            val_participants = [p for p in available_participants if p not in set(selected_train_participants)]
+            if len(val_participants) == 0:
+                print("\n✗ ERROR: Participant split produced an empty collected validation set.")
+                print("Please leave at least one participant out for collected LOSO validation.")
+                exit(1)
+
+            print("\n[Transfer Learning] Using collected participant LOSO split:")
+            print(f"  - Train participants: {selected_train_participants}")
+            print(f"  - Validation participants: {val_participants}")
+            print(f"  - Raw source: {collected_raw_path}")
+
+            print("\n[Transfer Learning] Loading collected TRAINING data from selected participants...")
+            X_train, y_train = DataPreparation.load_collected_data(
+                folder_path=collected_raw_path,
+                labelled_folder_path=collected_edited_path,
+                augment=True,
+                include_noise_aug=True,
+                include_participants=selected_train_participants,
+            )
+
+            print("\n[Transfer Learning] Loading collected VALIDATION data from held-out participants...")
+            X_val_collected, y_val_collected = DataPreparation.load_collected_data(
+                folder_path=collected_raw_path,
+                labelled_folder_path=collected_edited_path,
+                augment=False,
+                include_noise_aug=False,
+                include_participants=val_participants,
+            )
+        else:
+            # Legacy folder-based split.
+            print("\n[Transfer Learning] Loading TRAINING data from collected_data/training...")
+            X_train, y_train = DataPreparation.load_collected_data(
+                folder_path='./collected_data/training',
+                augment=True,
+                include_noise_aug=True,
+            )
+
+            print("\n[Transfer Learning] Checking for validation data in collected_data/validation...")
+            X_val_collected, y_val_collected = DataPreparation.load_collected_data(
+                folder_path='./collected_data/validation',
+                augment=True,
+                include_noise_aug=False,
+            )
         
         if X_train is None or len(X_train) == 0:
-            print("\n✗ ERROR: No training data found in ./collected_data/training/")
-            print("STOPPING: Transfer learning requires training data. Please add .mat files to ./collected_data/training/")
+            if selected_train_participants is None:
+                print("\n✗ ERROR: No training data found in ./collected_data/training/")
+                print("STOPPING: Transfer learning requires training data. Please add .mat files to ./collected_data/training/")
+            else:
+                print("\n✗ ERROR: No collected training samples were extracted for selected participants.")
+                print(f"Participants requested for training: {selected_train_participants}")
             exit(1)
-        
-        # 2. Load collected validation data (if available)
-        print("\n[Transfer Learning] Checking for validation data in collected_data/validation...")
-        X_val_collected, y_val_collected = DataPreparation.load_collected_data(
-            folder_path='./collected_data/validation',
-            augment=True,
-            include_noise_aug=False,
-        )
+
+        if selected_train_participants is not None and (X_val_collected is None or len(X_val_collected) == 0):
+            print("\n✗ ERROR: No held-out collected validation samples were extracted.")
+            print("Check that held-out participants have valid labelled files and windows.")
+            exit(1)
         
         # 3. Always load secondary data validation (from subject 8 LOSO fold)
         print("\n[Transfer Learning] Loading VALIDATION data from secondary_data (Subject 8)...")

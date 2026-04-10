@@ -274,11 +274,58 @@ def slice_into_windows(data_array, increment, window_size):
             windows.append(window.astype(np.float32))
     return windows
 
+
+def concat_continuous_segments(segments, targets):
+	"""
+	Concatenates channel-first segments into one continuous array with per-sample targets.
+
+	Args:
+		segments (list[np.ndarray]): Each segment has shape (channels, samples).
+		targets (list[np.ndarray]): Each target has shape (num_outputs,).
+
+	Returns:
+		tuple: (continuous_X, continuous_y) where
+			continuous_X has shape (channels, total_samples)
+			continuous_y has shape (total_samples, num_outputs)
+	"""
+	valid_segments = []
+	valid_targets = []
+
+	for seg, target in zip(segments, targets):
+		if seg is None or target is None:
+			continue
+
+		seg_arr = np.asarray(seg, dtype=np.float32)
+		target_arr = np.asarray(target, dtype=np.float32).reshape(-1)
+
+		if seg_arr.ndim != 2 or seg_arr.shape[1] == 0:
+			continue
+		if target_arr.size == 0:
+			continue
+
+		valid_segments.append(seg_arr)
+		valid_targets.append(target_arr)
+
+	if len(valid_segments) == 0:
+		return None, None
+
+	continuous_X = np.concatenate(valid_segments, axis=1).astype(np.float32)
+	continuous_y = np.concatenate(
+		[
+			np.repeat(target[np.newaxis, :], seg.shape[1], axis=0).astype(np.float32)
+			for seg, target in zip(valid_segments, valid_targets)
+		],
+		axis=0,
+	)
+
+	return continuous_X, continuous_y
+
 def load_and_prepare_dataset(
 	base_path='./biosignal_data/secondary/raw',
 	include_subjects=None,
 	labelled_base_path=None,
 	include_noise_aug=True,
+	return_continuous=False,
 ):
 	"""
 	Load and prepare dataset using pre-labelled contraction windows when available.
@@ -289,9 +336,12 @@ def load_and_prepare_dataset(
 		include_subjects (list): List of subject IDs to include. If None, includes all subjects (1-8).
 		labelled_base_path (str): Path to edited/labelled data directory. If None, infers from base_path.
 		include_noise_aug (bool): If True, adds configured noisy raw variants before filtering.
+		return_continuous (bool): If True, returns continuous arrays instead of pre-windowed tensors.
 	
 	Returns:
-		tuple: (X_data, y_targets) - preprocessed training data
+		tuple: (X_data, y_targets) - preprocessed data
+			- pre-windowed: X=(num_windows, channels, window_size), y=(num_windows, outputs)
+			- continuous:  X=(channels, total_samples), y=(total_samples, outputs)
 	"""
 	if include_subjects is None:
 		include_subjects = list(range(1, 9))  # All 8 subjects by default
@@ -433,6 +483,27 @@ def load_and_prepare_dataset(
 			alpha=Config.MIXUP_ALPHA, mixup_ratio=Config.MIXUP_RATIO
 		)
 
+	if return_continuous:
+		continuous_segments = []
+		continuous_targets = []
+
+		for burst, target in zip(all_active_bursts, all_active_targets):
+			continuous_segments.append(np.asarray(burst, dtype=np.float32))
+			continuous_targets.append(np.asarray(target, dtype=np.float32))
+
+		for valley in all_rest_valleys:
+			continuous_segments.append(np.asarray(valley, dtype=np.float32))
+			continuous_targets.append(REST_VECTOR)
+
+		X_data, y_targets = concat_continuous_segments(continuous_segments, continuous_targets)
+		if X_data is None:
+			print("No valid continuous data extracted.")
+			return None, None
+
+		print(f"Continuous dataset generated! Total Samples: {X_data.shape[1]}")
+		print(f"Data range after normalization: [{X_data.min():.4f}, {X_data.max():.4f}] (expected: [0.0, 1.0])\n")
+		return X_data, y_targets
+
 	X_data = []
 	y_targets = []
 
@@ -496,6 +567,7 @@ def load_collected_data(
 	augment=True,
 	include_noise_aug=True,
 	include_participants=None,
+	return_continuous=False,
 ):
 	"""
 	Load and preprocess collected .mat files using pre-labelled windows when available.
@@ -507,6 +579,7 @@ def load_collected_data(
 		include_noise_aug (bool): Whether to add configured noisy raw variants before filtering.
 		include_participants (list[int] | None): Optional participant IDs to include.
 			Only files matching P#M#.mat for selected participants are loaded.
+		return_continuous (bool): If True, returns continuous arrays instead of pre-windowed tensors.
 	
 	Returns:
 		tuple: (X_data, y_data) or (None, None) if no files found
@@ -562,6 +635,8 @@ def load_collected_data(
 		print(f"[Collected Data] Noise augmentation BEFORE filtering enabled: {_resolve_training_noise_magnitudes()}")
 	else:
 		print("[Collected Data] Noise augmentation BEFORE filtering disabled")
+
+	REST_VECTOR = np.array(Config.TARGET_MAPPING[9], dtype=np.float32)
 	
 	X_data = []
 	y_data = []
@@ -618,7 +693,7 @@ def load_collected_data(
 				exclude_windows=exclude_windows,
 			)
 			
-			variant_windows_total = 0
+			variant_units_total = 0
 			for raw_variant in raw_variants:
 				processed_data = np.zeros_like(raw_variant, dtype=np.float32)
 				
@@ -649,56 +724,91 @@ def load_collected_data(
 						normalised = np.clip((rectified - min_val) / range_span, 0.0, 1.0)
 					processed_data[c, :] = normalised
 
-				# Try to use pre-labelled windows
-				windows = []
+				if return_continuous:
+					segments = []
+					segment_targets = []
 
-				if label_mat is not None:
-					try:
-						if 'LABELS' in label_mat:
-							labels = label_mat['LABELS']
-							bursts, valleys = extract_bursts_from_labels(processed_data, labels)
+					if label_mat is not None and 'LABELS' in label_mat:
+						labels = label_mat['LABELS']
+						bursts, valleys = extract_bursts_from_labels(processed_data, labels)
 
-							# Use bursts + valleys for windowing
-							all_contraction_data = bursts + valleys
-							for data in all_contraction_data:
-								windows.extend(slice_into_windows(data, Config.INCREMENT, Config.WINDOW_SIZE))
-						else:
-							# No LABELS in file, fall back to slicing
-							windows = slice_into_windows(processed_data, Config.INCREMENT, Config.WINDOW_SIZE)
-					except Exception as e:
-						print(f"  [WARNING] Could not use labelled file, falling back to slicing: {e}")
-						windows = slice_into_windows(processed_data, Config.INCREMENT, Config.WINDOW_SIZE)
+						for burst in bursts:
+							segments.append(burst)
+							segment_targets.append(target_vector)
+						for valley in valleys:
+							segments.append(valley)
+							segment_targets.append(REST_VECTOR)
+					else:
+						segments = [processed_data]
+						segment_targets = [target_vector]
+
+					variant_units_total += len(segments)
+					if len(segments) == 0:
+						continue
+
+					for seg, seg_target in zip(segments, segment_targets):
+						X_data.append(np.asarray(seg, dtype=np.float32))
+						y_data.append(np.asarray(seg_target, dtype=np.float32))
+
+						if augment:
+							X_data.append(apply_magnitude_warping(seg, sigma=0.25))
+							y_data.append(np.asarray(seg_target, dtype=np.float32))
+							X_data.append(apply_magnitude_warping(seg, sigma=0.40))
+							y_data.append(np.asarray(seg_target, dtype=np.float32))
 				else:
-					# No labelled file found, slice entire signal
-					windows = slice_into_windows(processed_data, Config.INCREMENT, Config.WINDOW_SIZE)
+					# Try to use pre-labelled windows
+					windows = []
 
-				variant_windows_total += len(windows)
-				if len(windows) == 0:
-					continue
+					if label_mat is not None:
+						try:
+							if 'LABELS' in label_mat:
+								labels = label_mat['LABELS']
+								bursts, valleys = extract_bursts_from_labels(processed_data, labels)
 
-				for w in windows:
-					X_data.append(w)
-					y_data.append(target_vector)
+								# Use bursts + valleys for windowing
+								all_contraction_data = bursts + valleys
+								for data in all_contraction_data:
+									windows.extend(slice_into_windows(data, Config.INCREMENT, Config.WINDOW_SIZE))
+							else:
+								# No LABELS in file, fall back to slicing
+								windows = slice_into_windows(processed_data, Config.INCREMENT, Config.WINDOW_SIZE)
+						except Exception as e:
+							print(f"  [WARNING] Could not use labelled file, falling back to slicing: {e}")
+							windows = slice_into_windows(processed_data, Config.INCREMENT, Config.WINDOW_SIZE)
+					else:
+						# No labelled file found, slice entire signal
+						windows = slice_into_windows(processed_data, Config.INCREMENT, Config.WINDOW_SIZE)
 
-					# Apply augmentation if requested
-					if augment:
-						X_data.append(apply_magnitude_warping(w, sigma=0.25))
+					variant_units_total += len(windows)
+					if len(windows) == 0:
+						continue
+
+					for w in windows:
+						X_data.append(w)
 						y_data.append(target_vector)
-						X_data.append(apply_magnitude_warping(w, sigma=0.40))
-						y_data.append(target_vector)
 
-			if variant_windows_total == 0:
-				print(f"  [SKIP] {mat_file}: No windows extracted")
+						# Apply augmentation if requested
+						if augment:
+							X_data.append(apply_magnitude_warping(w, sigma=0.25))
+							y_data.append(target_vector)
+							X_data.append(apply_magnitude_warping(w, sigma=0.40))
+							y_data.append(target_vector)
+
+			if variant_units_total == 0:
+				print(f"  [SKIP] {mat_file}: No segments/windows extracted")
 				continue
 
 			if label_mat is not None and 'LABELS' in label_mat:
-				print(f"  [LOADED] {mat_file} (using labelled windows across {len(raw_variants)} variants → {variant_windows_total} samples)")
+				unit_label = 'segments' if return_continuous else 'samples'
+				print(f"  [LOADED] {mat_file} (using labelled data across {len(raw_variants)} variants → {variant_units_total} {unit_label})")
 			
 			if not os.path.exists(labelled_file):
+				unit_label = 'segments' if return_continuous else 'windows'
+				aug_multiplier = 3 if augment else 1
 				print(
 					f"  [LOADED] {mat_file} "
-					f"({variant_windows_total} windows across {len(raw_variants)} variants "
-					f"→ {variant_windows_total * (3 if augment else 1)} samples)"
+					f"({variant_units_total} {unit_label} across {len(raw_variants)} variants "
+					f"→ {variant_units_total * aug_multiplier} items)"
 				)
 		
 		except Exception as e:
@@ -708,6 +818,15 @@ def load_collected_data(
 	if len(X_data) == 0:
 		print(f"[Collected Data] No valid data extracted from {folder_path}")
 		return None, None
+
+	if return_continuous:
+		continuous_X, continuous_y = concat_continuous_segments(X_data, y_data)
+		if continuous_X is None:
+			print(f"[Collected Data] No valid continuous data extracted from {folder_path}")
+			return None, None
+
+		print(f"[Collected Data] Total continuous samples from {folder_path}: {continuous_X.shape[1]}")
+		return continuous_X, continuous_y
 	
 	X_data = np.array(X_data, dtype=np.float32)
 	y_data = np.array(y_data, dtype=np.float32)

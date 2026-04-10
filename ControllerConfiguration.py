@@ -18,6 +18,13 @@ WINDOW_SIZE = 500           # 500 ms window size
 INCREMENT = 62              # 62 ms step size (~16 Hz update rate)
 SMOOTHING_ALPHA = 0.1       # Exponential moving average factor for kinematic output (0.0 to 1.0)
 
+# Optional training mode: slice windows dynamically from continuous EMG arrays.
+# If disabled, training uses pre-windowed tensors (legacy behavior).
+ON_THE_FLY_WINDOW_SLICING = True
+ON_THE_FLY_WINDOW_SIZE = WINDOW_SIZE
+ON_THE_FLY_STEP_SIZE = INCREMENT
+ON_THE_FLY_ACTIVE_CHANNELS = None  # Example: [0, 1, 2, 3]
+
 # ====================================================================================
 # 2b. VISUALIZATION SETTINGS
 # ====================================================================================
@@ -44,7 +51,7 @@ MIXUP_RATIO = 0.75           # Ratio of new mixup samples to generate (0.5 = dat
 TRAINING_NOISE_MAGNITUDES = [0.000005, 0.00001]
 
 REST_MIXUP_ALPHA = 0.2           # Alpha parameter for the Beta distribution (controls blend intensity)
-REST_MIXUP_RATIO = 0.10           # Ratio of new mixup samples to generate (0.5 = dataset increases by 50%)
+REST_MIXUP_RATIO = 0.1           # Ratio of new mixup samples to generate (0.5 = dataset increases by 50%)
 
 # ====================================================================================
 # 5. NEURAL NETWORK TRAINING PARAMETERS
@@ -138,8 +145,8 @@ CORRUPTED_TRIALS = [
     (1, 1),  # P1, M1: Defective Pectoralis Major (Sternal)
     (5, 1),  # P5, M1: Defective Trapezius Ascendant
     (7, 1),  # P7, M1: Defective Latissimus Dorsi
-    (8, 2),  # P8, M2: Defective Latissimus Dorsi
-    (8, 3),  # P8, M3: Defective Latissimus Dorsi
+    # (8, 2),  # P8, M2: Defective Latissimus Dorsi
+    # (8, 3),  # P8, M3: Defective Latissimus Dorsi
     (3, 4),  # P3, M4: Defective Trapezius Ascendant
     (4, 4),  # P4, M4: Noisy Everything
     (1, 5),  # P1, M5: Defective Serratus Anterior

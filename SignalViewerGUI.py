@@ -468,12 +468,35 @@ class SignalViewerGUI(QMainWindow):
         noise_power = max(noise_power, EPS)
         return float(10.0 * np.log10(signal_power / noise_power))
 
-    def _window_spans_pct(self, channel_signal: np.ndarray) -> list:
-        windows = self.signal_processor.detect_burst_windows(channel_signal[np.newaxis, :])
+    def _window_spans_pct(self) -> list:
+        """Load windows from LABELS in mat file first, fall back to burst detection if missing."""
+        if self.primary_signal is None:
+            return []
+
+        # Try to load LABELS from the mat file first
+        try:
+            mat = scipy.io.loadmat(self.primary_signal.file_path)
+            parsed_windows = self.signal_processor._parse_labels(
+                mat.get("LABELS"),
+                n_samples=self.primary_signal.raw_data.shape[1]
+            )
+            if parsed_windows:
+                n = max(1, self.primary_signal.raw_data.shape[1] - 1)
+                spans = []
+                for start, end in parsed_windows:
+                    start_pct = (float(start) / n) * 100.0
+                    end_pct = (float(end) / n) * 100.0
+                    spans.append((start_pct, end_pct))
+                return spans
+        except Exception:
+            pass
+
+        # Fall back to burst detection if LABELS are missing or invalid
+        windows = self.signal_processor.detect_burst_windows(self.primary_signal.raw_data)
         if not windows:
             return []
 
-        n = max(1, channel_signal.shape[0] - 1)
+        n = max(1, self.primary_signal.raw_data.shape[1] - 1)
         spans = []
         for start, end in windows:
             start_pct = (float(start) / n) * 100.0
@@ -561,13 +584,19 @@ class SignalViewerGUI(QMainWindow):
         )
 
         if self.toggle_show_windows.isChecked():
-            for start_pct, end_pct in self._window_spans_pct(primary_ch):
+            for start_pct, end_pct in self._window_spans_pct():
                 self.ax_main.axvspan(start_pct, end_pct, color="tab:blue", alpha=0.11, zorder=-1)
 
             if secondary_norm is not None:
                 secondary_ch = secondary_norm[channel, :]
-                for start_pct, end_pct in self._window_spans_pct(secondary_ch):
-                    self.ax_main.axvspan(start_pct, end_pct, color="0.50", alpha=0.07, zorder=-2)
+                # For secondary, fall back to burst detection since we don't load secondary file labels
+                windows = self.signal_processor.detect_burst_windows(secondary_norm)
+                if windows:
+                    n = max(1, secondary_ch.shape[0] - 1)
+                    for start, end in windows:
+                        start_pct = (float(start) / n) * 100.0
+                        end_pct = (float(end) / n) * 100.0
+                        self.ax_main.axvspan(start_pct, end_pct, color="0.50", alpha=0.07, zorder=-2)
 
         y_min = min(float(np.min(arr)) for arr in stack_for_ylim)
         y_max = max(float(np.max(arr)) for arr in stack_for_ylim)

@@ -864,20 +864,26 @@ def _resolve_training_device():
 
 
 def _parse_participant_list(participant_list_raw):
-    """Parses participant IDs from strings like "[1,2,4]" or "1,2,4"."""
+    """
+    Parses participant IDs from strings like "[1,2,4]" or "1,2,4".
+    Returns empty list for empty input (control case: no collected participants).
+    """
     if participant_list_raw is None:
         return None
 
     text = str(participant_list_raw).strip()
-    if not text:
-        raise ValueError("--collected_train_participants was provided but is empty.")
+    
+    # Handle empty input: return empty list for control case (no collected data)
+    if not text or text == "[]":
+        return []
 
     if text.startswith("[") and text.endswith("]"):
         text = text[1:-1].strip()
 
     tokens = [token for token in re.split(r"[,\s]+", text) if token]
     if len(tokens) == 0:
-        raise ValueError("No participant IDs were found in --collected_train_participants.")
+        # Empty after bracket removal: return empty list
+        return []
 
     participants = []
     for token in tokens:
@@ -1120,7 +1126,7 @@ if __name__ == "__main__":
         print(f"\nERROR: {exc}")
         exit(1)
 
-    include_collected_main_modes = args.include_collected or (selected_collected_for_main_modes is not None)
+    include_collected_main_modes = args.include_collected or (selected_collected_for_main_modes is not None and len(selected_collected_for_main_modes) > 0)
     collected_raw_path = os.path.join(Config.BASE_DATA_PATH, 'collected', 'raw')
     collected_edited_path = os.path.join(Config.BASE_DATA_PATH, 'collected', 'edited')
 
@@ -1132,15 +1138,19 @@ if __name__ == "__main__":
 
         if selected_collected_for_main_modes is None:
             selected_collected_for_main_modes = available_collected
-        else:
+        elif len(selected_collected_for_main_modes) > 0:
+            # Only validate if non-empty list was explicitly provided
             missing_participants = sorted(set(selected_collected_for_main_modes) - set(available_collected))
             if missing_participants:
                 print(f"\nERROR: Requested collected participants not found: {missing_participants}")
                 print(f"Available collected participants: {available_collected}")
                 exit(1)
 
-        print("\n[Collected Integration] Enabled for main training mode.")
-        print(f"  - Included collected participants: {selected_collected_for_main_modes}")
+        if len(selected_collected_for_main_modes) > 0:
+            print("\n[Collected Integration] Enabled for main training mode.")
+            print(f"  - Included collected participants: {selected_collected_for_main_modes}")
+        else:
+            print("\n[Control Case] No collected participants selected (empty list).")
     elif selected_collected_for_main_modes is not None and args.mode == 'transfer':
         print("\n[Info] --collected_participants is ignored in transfer mode.")
         print("[Info] Use --collected_train_participants for transfer participant splits.")
@@ -1244,7 +1254,7 @@ if __name__ == "__main__":
             exit(1)
 
         # Optional collected participant selection for TRAINING only.
-        if selected_train_participants is not None:
+        if selected_train_participants is not None and len(selected_train_participants) > 0:
             collected_raw_path = os.path.join(Config.BASE_DATA_PATH, 'collected', 'raw')
             collected_edited_path = os.path.join(Config.BASE_DATA_PATH, 'collected', 'edited')
 
@@ -1276,8 +1286,8 @@ if __name__ == "__main__":
                 return_continuous=on_the_fly_enabled,
             )
             X_val_collected, y_val_collected = None, None
-        else:
-            # Legacy folder-based split.
+        elif selected_train_participants is None:
+            # Legacy folder-based split (no collected participants specified, try legacy folders)
             print("\n[Transfer Learning] Loading TRAINING data from collected_data/training...")
             X_train, y_train = DataPreparation.load_collected_data(
                 folder_path='./collected_data/training',
@@ -1293,14 +1303,21 @@ if __name__ == "__main__":
                 include_noise_aug=False,
                 return_continuous=on_the_fly_enabled,
             )
+        else:
+            # Control case: empty list provided, use SECONDARY DATA ONLY (no collected data)
+            print("\n[Control Case] Empty collected participant list provided.")
+            print("[Transfer Learning] Using SECONDARY DATA for both TRAINING and VALIDATION (control case)...")
+            X_train, y_train = DataPreparation.load_and_prepare_dataset(
+                base_path=Config.SECONDARY_DATA_PATH,
+                include_subjects=[1, 2, 3, 4, 5, 6, 7],  # All but subject 8
+                include_noise_aug=True,
+                return_continuous=on_the_fly_enabled,
+            )
+            X_val_collected, y_val_collected = None, None
         
         if X_train is None or _count_samples(X_train, y_train) == 0:
-            if selected_train_participants is None:
-                print("\n✗ ERROR: No training data found in ./collected_data/training/")
-                print("STOPPING: Transfer learning requires training data. Please add .mat files to ./collected_data/training/")
-            else:
-                print("\n✗ ERROR: No collected training samples were extracted for selected participants.")
-                print(f"Participants requested for training: {selected_train_participants}")
+            print("\n✗ ERROR: No training data available.")
+            print(f"Selected train participants: {selected_train_participants}")
             exit(1)
         
         # 3. Always load secondary data validation (from subject 8 LOSO fold)

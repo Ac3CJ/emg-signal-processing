@@ -14,7 +14,7 @@ NUM_OUTPUTS = 4             # Output DOFs: [Yaw, Pitch, Roll, Elbow]
 # ====================================================================================
 # 2. SLIDING WINDOW & REAL-TIME CONSTRAINTS
 # ====================================================================================
-WINDOW_SIZE = 500           # 500 ms window size
+WINDOW_SIZE = 100           # 500 ms window size
 INCREMENT = 62              # 62 ms step size (~16 Hz update rate)
 SMOOTHING_ALPHA = 0.1       # Exponential moving average factor for kinematic output (0.0 to 1.0)
 

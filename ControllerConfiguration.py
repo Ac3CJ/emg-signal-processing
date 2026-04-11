@@ -14,9 +14,16 @@ NUM_OUTPUTS = 4             # Output DOFs: [Yaw, Pitch, Roll, Elbow]
 # ====================================================================================
 # 2. SLIDING WINDOW & REAL-TIME CONSTRAINTS
 # ====================================================================================
-WINDOW_SIZE = 500           # 500 ms window size
+WINDOW_SIZE = 100           # 500 ms window size
 INCREMENT = 62              # 62 ms step size (~16 Hz update rate)
 SMOOTHING_ALPHA = 0.1       # Exponential moving average factor for kinematic output (0.0 to 1.0)
+
+# Optional training mode: slice windows dynamically from continuous EMG arrays.
+# If disabled, training uses pre-windowed tensors (legacy behavior).
+ON_THE_FLY_WINDOW_SLICING = True
+ON_THE_FLY_WINDOW_SIZE = WINDOW_SIZE
+ON_THE_FLY_STEP_SIZE = INCREMENT
+ON_THE_FLY_ACTIVE_CHANNELS = None  # Example: [0, 1, 2, 3]
 
 # ====================================================================================
 # 2b. VISUALIZATION SETTINGS
@@ -39,17 +46,21 @@ FILTER_ORDER = 4            # Butterworth filter order
 MIXUP_ALPHA = 0.2           # Alpha parameter for the Beta distribution (controls blend intensity)
 MIXUP_RATIO = 0.75           # Ratio of new mixup samples to generate (0.5 = dataset increases by 50%)
 
+# White-noise augmentation applied BEFORE filtering in data-preparation pipelines.
+# Each value creates an additional full noisy copy of every trial across all channels.
+TRAINING_NOISE_MAGNITUDES = [0.000005, 0.00001]
+
 REST_MIXUP_ALPHA = 0.2           # Alpha parameter for the Beta distribution (controls blend intensity)
-REST_MIXUP_RATIO = 0.10           # Ratio of new mixup samples to generate (0.5 = dataset increases by 50%)
+REST_MIXUP_RATIO = 0.1           # Ratio of new mixup samples to generate (0.5 = dataset increases by 50%)
 
 # ====================================================================================
 # 5. NEURAL NETWORK TRAINING PARAMETERS
 # ====================================================================================
-EPOCHS = 250
-BATCH_SIZE = 512            # Reduced for 16GB RAM constraint (was 1280)
+EPOCHS = 150
+BATCH_SIZE = 256            # Reduced for 16GB RAM constraint (was 1280)
 GRADIENT_ACCUMULATION_STEPS = 2  # Accumulate 2 batches = effective batch of 1024 without RAM spike
-NUM_DATA_WORKERS = 2        # Reduced for RAM (was 4)
-PATIENCE = 40              # Early stopping patience
+NUM_DATA_WORKERS = 1        # Reduced for RAM (was 4)
+PATIENCE = 20              # Early stopping patience
 LEARNING_RATE = 0.001
 LR_SCHEDULER_FACTOR = 0.5  # Reduce LR by this factor when plateau detected
 LR_SCHEDULER_PATIENCE = 5  # Wait this many epochs before reducing LR
@@ -77,7 +88,9 @@ UDP_PORT = 5005             # Port listening on the Unity/Virtual Environment si
 # ====================================================================================
 # 7. FILE PATHS
 # ====================================================================================
-BASE_DATA_PATH = './secondary_data'
+BASE_DATA_PATH = './biosignal_data'
+SECONDARY_DATA_PATH = f'{BASE_DATA_PATH}/secondary/edited'
+COLLECTED_DATA_PATH = f'{BASE_DATA_PATH}/collected/edited'
 MODEL_SAVE_PATH = 'best_shoulder_rcnn.pth'
 
 # ====================================================================================
@@ -132,8 +145,8 @@ CORRUPTED_TRIALS = [
     (1, 1),  # P1, M1: Defective Pectoralis Major (Sternal)
     (5, 1),  # P5, M1: Defective Trapezius Ascendant
     (7, 1),  # P7, M1: Defective Latissimus Dorsi
-    (8, 2),  # P8, M2: Defective Latissimus Dorsi
-    (8, 3),  # P8, M3: Defective Latissimus Dorsi
+    # (8, 2),  # P8, M2: Defective Latissimus Dorsi
+    # (8, 3),  # P8, M3: Defective Latissimus Dorsi
     (3, 4),  # P3, M4: Defective Trapezius Ascendant
     (4, 4),  # P4, M4: Noisy Everything
     (1, 5),  # P1, M5: Defective Serratus Anterior

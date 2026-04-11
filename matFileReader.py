@@ -9,6 +9,62 @@ import argparse
 import SignalProcessing
 import ControllerConfiguration as Config
 
+# ====================================================================================
+# ================================ MINMAX HELPERS ===================================
+# ====================================================================================
+
+def _extract_robust_minmax(mat_data):
+    """Extracts [num_channels, 2] robust min/max matrix from MAT payload."""
+    for key in ("MIN_MAX_ROBUST", "MIN_MAX"):
+        if key not in mat_data:
+            continue
+        matrix = np.asarray(mat_data[key], dtype=np.float32)
+        if matrix.ndim != 2:
+            continue
+        if matrix.shape == (Config.NUM_CHANNELS, 2):
+            return matrix
+        if matrix.shape == (2, Config.NUM_CHANNELS):
+            return matrix.T
+    return None
+
+
+def _get_labelled_path_for_secondary(raw_path):
+    """
+    Converts a secondary raw file path to its labelled variant.
+    Example: ./secondary_data/raw/Soggetto1/Movimento1.mat
+          -> ./secondary_data/edited/Soggetto1/Movimento1_labelled.mat
+    """
+    norm_path = raw_path.replace('\\', '/')
+    norm_path = norm_path.replace('/raw/', '/edited/')
+    if norm_path.endswith('.mat'):
+        norm_path = norm_path[:-4] + '_labelled.mat'
+    return norm_path
+
+
+def _resolve_robust_minmax_for_file(file_path):
+    """
+    Attempts to load MIN_MAX_ROBUST from the file itself,
+    or from its labelled variant if available.
+    """
+    try:
+        mat = scipy.io.loadmat(file_path)
+        matrix = _extract_robust_minmax(mat)
+        if matrix is not None:
+            return matrix
+    except Exception:
+        pass
+
+    # Try to find labelled variant
+    if 'secondary' in file_path.replace('\\', '/'):
+        labelled_path = _get_labelled_path_for_secondary(file_path)
+        try:
+            labelled_mat = scipy.io.loadmat(labelled_path)
+            return _extract_robust_minmax(labelled_mat)
+        except Exception:
+            pass
+
+    return None
+
 # Sampling rate from Rivela et al. (1.0 kHz)
 FS = 1000.0 
 
@@ -92,10 +148,11 @@ def get_burst_time_windows(signal_data, fs=1000.0, window_length_sec=4.5):
 # ====================================================================================
 
 class EMGInteractivePlotter:
-    def __init__(self, raw_data, fs, channel_map, generate_burst_plots=False):
+    def __init__(self, raw_data, fs, channel_map, robust_minmax=None, generate_burst_plots=False):
         self.raw_data = raw_data
         self.fs = fs
         self.channel_map = channel_map
+        self.robust_minmax = robust_minmax
         self.num_channels, self.num_samples = raw_data.shape
         self.time_axis = np.arange(self.num_samples) / self.fs
         self.current_idx = 0
@@ -105,12 +162,12 @@ class EMGInteractivePlotter:
         self.tkeo_data = np.zeros_like(self.raw_data)
 
         for c in range(self.num_channels):
-            median = scipy.signal.medfilt(self.raw_data[c, :], kernel_size=11)
-            notch = SignalProcessing.notchFilter(median, fs=self.fs, notchFreq=Config.NOTCH_FREQ)
+            # Apply standard sEMG processing: notch → bandpass → rectify
+            notch = SignalProcessing.notchFilter(self.raw_data[c, :], fs=self.fs, notchFreq=Config.NOTCH_FREQ)
             band = SignalProcessing.bandpassFilter(notch, fs=self.fs, lowCut=Config.BANDPASS_LOW, highCut=Config.BANDPASS_HIGH)
-
             rectified_classic = np.abs(band)
             
+            # TKEO envelope: teager → rectify → lowpass
             teager = SignalProcessing.tkeo(band)
             rectified_teager = np.abs(teager)
             envelope = SignalProcessing.lowpassFilter(rectified_teager, fs=self.fs, cutoff=5.0)
@@ -118,8 +175,31 @@ class EMGInteractivePlotter:
             self.classic_data[c, :] = rectified_classic
             self.tkeo_data[c, :] = envelope
 
-        self.classic_data = SignalProcessing.applyGlobalNormalization(self.classic_data, percentiles=(1.0, 99.0))
-        self.tkeo_data = SignalProcessing.applyGlobalNormalization(self.tkeo_data, percentiles=(1.0, 99.0))
+        # Normalize using robust minmax if available, otherwise use percentile-based
+        if self.robust_minmax is not None:
+            print(f"[matFileReader] Using MIN_MAX_ROBUST for normalization")
+            normalized_classic = np.zeros_like(self.classic_data, dtype=np.float32)
+            normalized_tkeo = np.zeros_like(self.tkeo_data, dtype=np.float32)
+            
+            for c in range(self.num_channels):
+                scale_classic = SignalProcessing.get_rectified_scale_from_minmax(
+                    self.robust_minmax[c, 0],
+                    self.robust_minmax[c, 1],
+                )
+                normalized_classic[c, :] = np.clip(self.classic_data[c, :] / scale_classic, 0.0, 1.0)
+                
+                scale_tkeo = SignalProcessing.get_rectified_scale_from_minmax(
+                    self.robust_minmax[c, 0],
+                    self.robust_minmax[c, 1],
+                )
+                normalized_tkeo[c, :] = np.clip(self.tkeo_data[c, :] / scale_tkeo, 0.0, 1.0)
+            
+            self.classic_data = normalized_classic
+            self.tkeo_data = normalized_tkeo
+        else:
+            print(f"[matFileReader] MIN_MAX_ROBUST not found. Using percentile-based normalization")
+            self.classic_data = SignalProcessing.applyGlobalNormalization(self.classic_data, percentiles=(1.0, 99.0))
+            self.tkeo_data = SignalProcessing.applyGlobalNormalization(self.tkeo_data, percentiles=(1.0, 99.0))
 
         # Get windows AND the global curve
         self.classic_bursts, classic_global_curve = get_burst_time_windows(self.classic_data, self.fs)
@@ -219,7 +299,7 @@ class EMGInteractivePlotter:
 # ============================== FULL DATASET BATCH PROCESSING =======================
 # ====================================================================================
 
-def batch_generate_all_plots(base_dir='./secondary_data/', output_dir='./burstwindow-plots/'):
+def batch_generate_all_plots(base_dir='./biosignal_data/secondary/raw/', output_dir='./burstwindow-plots/'):
     os.makedirs(output_dir, exist_ok=True)
     print(f"Starting FULL BATCH GENERATION. Images will be saved to: {output_dir}")
 
@@ -241,17 +321,46 @@ def batch_generate_all_plots(base_dir='./secondary_data/', output_dir='./burstwi
 
             num_channels = raw_data.shape[0]
             time_axis = np.arange(raw_data.shape[1]) / FS
-            tkeo_data = np.zeros_like(raw_data)
+            
+            # Try to load robust minmax
+            robust_minmax = _resolve_robust_minmax_for_file(file_path)
+            
+            classic_data = np.zeros_like(raw_data, dtype=np.float32)
+            tkeo_data = np.zeros_like(raw_data, dtype=np.float32)
 
             for c in range(num_channels):
                 notch = SignalProcessing.notchFilter(raw_data[c, :], fs=FS, notchFreq=Config.NOTCH_FREQ)
                 band = SignalProcessing.bandpassFilter(notch, fs=FS, lowCut=Config.BANDPASS_LOW, highCut=Config.BANDPASS_HIGH)
+                
+                # Classic rectified signal
+                rectified = np.abs(band)
+                classic_data[c, :] = rectified
+                
+                # TKEO envelope
                 teager = SignalProcessing.tkeo(band)
                 rectified_teager = np.abs(teager)
                 envelope = SignalProcessing.lowpassFilter(rectified_teager, fs=FS, cutoff=5.0)
+                tkeo_data[c, :] = envelope
 
-                tkeo_max = np.percentile(envelope, 99.9) + 1e-6
-                tkeo_data[c, :] = np.clip(envelope / tkeo_max, 0.0, 1.0)
+            # Normalize using robust minmax if available
+            if robust_minmax is not None:
+                normalized_classic = np.zeros_like(classic_data, dtype=np.float32)
+                normalized_tkeo = np.zeros_like(tkeo_data, dtype=np.float32)
+                
+                for c in range(num_channels):
+                    scale = SignalProcessing.get_rectified_scale_from_minmax(
+                        robust_minmax[c, 0],
+                        robust_minmax[c, 1],
+                    )
+                    normalized_classic[c, :] = np.clip(classic_data[c, :] / scale, 0.0, 1.0)
+                    normalized_tkeo[c, :] = np.clip(tkeo_data[c, :] / scale, 0.0, 1.0)
+                
+                classic_data = normalized_classic
+                tkeo_data = normalized_tkeo
+            else:
+                # Fallback to percentile normalization
+                classic_data = SignalProcessing.applyGlobalNormalization(classic_data, percentiles=(1.0, 99.0))
+                tkeo_data = SignalProcessing.applyGlobalNormalization(tkeo_data, percentiles=(1.0, 99.0))
 
             # Get bursts and the global curve used to find them
             tkeo_bursts, tkeo_global_curve = get_burst_time_windows(tkeo_data, FS)
@@ -333,13 +442,12 @@ if __name__ == "__main__":
     else:
         # Construct file path based on mode
         if args.mode == 'secondary':
-            # Secondary data format: ./secondary_data/Soggetto{p}/Movimento{m}.mat
-            file_location = f'./secondary_data/Soggetto{args.p}/'
+            # Secondary data format: ./secondary_data/raw/Soggetto{p}/Movimento{m}.mat
+            file_location = f'./biosignal_data/secondary/raw/Soggetto{args.p}/'
             file_name = file_location + f'Movimento{args.m}.mat'
         else:  # collected
-            # Collected data format: ./collected_data/edit/P{p}M{m}_edit.mat
-            file_location = './collected_data/edit/'
-            file_name = file_location + f'P{args.p}M{args.m}_edit.mat'
+            # Collected data format: ./collected_data/edited/P{p}M{m}_labelled.mat
+            file_name = Config.COLLECTED_DATA_PATH + f'P{args.p}M{args.m}_labelled.mat'
         
         # Load and display
         print(f"Loading {args.mode} data: {file_name}")
@@ -347,6 +455,14 @@ if __name__ == "__main__":
 
         if contents and 'EMGDATA' in contents:
             raw_emg_data = contents['EMGDATA']
-            plotter = EMGInteractivePlotter(raw_emg_data, FS, CHANNEL_MAP, generate_burst_plots=False)
+            
+            # Try to load robust minmax
+            robust_minmax = _resolve_robust_minmax_for_file(file_name)
+            if robust_minmax is not None:
+                print(f"[matFileReader] Loaded MIN_MAX_ROBUST from file or labelled variant")
+            else:
+                print(f"[matFileReader] No MIN_MAX_ROBUST found; will use percentile normalization")
+            
+            plotter = EMGInteractivePlotter(raw_emg_data, FS, CHANNEL_MAP, robust_minmax=robust_minmax, generate_burst_plots=False)
         else:
             print(f"Error: Could not load EMGDATA from {file_name}")

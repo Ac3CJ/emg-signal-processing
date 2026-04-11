@@ -1,12 +1,14 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, Dataset
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 import time
+import os
+import re
 
 import DataPreparation
 import ControllerConfiguration as Config
@@ -17,36 +19,96 @@ if hasattr(torch.backends, 'xpu'):
     torch.backends.xpu.benchmark = True  # Auto-tune Intel GPU kernels
 
 # ====================================================================================
-# ============================== CUSTOM LOSS FUNCTION ================================
-# ====================================================================================
-
-class AsymmetricKinematicLoss(nn.Module):
-    def __init__(self, phantom_pitch_penalty=5.0):
-        super(AsymmetricKinematicLoss, self).__init__()
-        self.penalty = phantom_pitch_penalty
-        # reduction='none' allows us to modify specific elements before averaging
-        self.mse = nn.MSELoss(reduction='none') 
-
-    def forward(self, predictions, targets):
-        # 1. Calculate standard MSE for all 4 DOFs: [Yaw, Pitch, Roll, Elbow]
-        base_loss = self.mse(predictions, targets)
-
-        # 2. Create a mask: It equals 1.0 ONLY when the Target Pitch is exactly 0.0
-        # (This isolates pure Flexion, Hyperextension, and Rest)
-        zero_pitch_mask = (targets[:, 1] == 0.0).float()
-
-        # 3. Apply the heavy penalty multiplier ONLY to the Pitch error
-        pitch_loss = base_loss[:, 1] * (1.0 + (self.penalty - 1.0) * zero_pitch_mask)
-
-        # 4. Replace the original Pitch loss with the newly penalized one
-        base_loss[:, 1] = pitch_loss
-
-        # 5. Return the final scalar loss so the network can backpropagate
-        return base_loss.mean()
-
-# ====================================================================================
 # ============================== RCNN MODEL DEFINITION ===============================
 # ====================================================================================
+
+class ContinuousEMGDataset(Dataset):
+    """
+    Memory-efficient dataset that slices sliding windows on-the-fly from continuous EMG arrays.
+
+    Args:
+        continuous_X (np.ndarray): Shape (num_channels, total_samples).
+        continuous_y (np.ndarray): Shape (total_samples, num_outputs).
+        window_size (int): Number of samples per window.
+        step_size (int): Number of samples between consecutive windows.
+        active_channels (list[int] | None): Optional subset of channels to use.
+    """
+
+    def __init__(self, continuous_X, continuous_y, window_size, step_size, active_channels=None):
+        if not isinstance(continuous_X, np.ndarray):
+            raise TypeError("continuous_X must be a numpy.ndarray")
+        if not isinstance(continuous_y, np.ndarray):
+            raise TypeError("continuous_y must be a numpy.ndarray")
+
+        if continuous_X.ndim != 2:
+            raise ValueError(
+                f"continuous_X must have shape (num_channels, total_samples), got {continuous_X.shape}"
+            )
+        if continuous_y.ndim != 2:
+            raise ValueError(
+                f"continuous_y must have shape (total_samples, num_outputs), got {continuous_y.shape}"
+            )
+
+        if window_size <= 0:
+            raise ValueError(f"window_size must be positive, got {window_size}")
+        if step_size <= 0:
+            raise ValueError(f"step_size must be positive, got {step_size}")
+
+        num_channels, total_samples = continuous_X.shape
+        if continuous_y.shape[0] != total_samples:
+            raise ValueError(
+                "continuous_X and continuous_y must share the same total_samples dimension. "
+                f"Got X total_samples={total_samples}, y total_samples={continuous_y.shape[0]}"
+            )
+        if window_size > total_samples:
+            raise ValueError(
+                f"window_size ({window_size}) cannot be larger than total_samples ({total_samples})"
+            )
+
+        if active_channels is None:
+            channel_indices = np.arange(num_channels, dtype=np.int64)
+        else:
+            channel_indices = np.asarray(active_channels, dtype=np.int64)
+            if channel_indices.ndim != 1 or channel_indices.size == 0:
+                raise ValueError("active_channels must be a non-empty 1D list/array of channel indices")
+            if np.any(channel_indices < 0) or np.any(channel_indices >= num_channels):
+                raise ValueError(
+                    f"active_channels indices must be in range [0, {num_channels - 1}]"
+                )
+
+        self.continuous_X = continuous_X
+        self.continuous_y = continuous_y
+        self.window_size = int(window_size)
+        self.step_size = int(step_size)
+        self.active_channels = channel_indices
+        self.total_samples = total_samples
+
+        # Number of valid sliding windows without precomputing any window tensor.
+        self.num_windows = ((self.total_samples - self.window_size) // self.step_size) + 1
+
+    def __len__(self):
+        return self.num_windows
+
+    def __getitem__(self, index):
+        if isinstance(index, torch.Tensor):
+            index = int(index.item())
+
+        if index < 0:
+            index += self.num_windows
+        if index < 0 or index >= self.num_windows:
+            raise IndexError(f"Index {index} out of range for dataset of size {self.num_windows}")
+
+        start_idx = index * self.step_size
+        end_idx = start_idx + self.window_size
+
+        # Output feature shape remains (Channels, Length) for Conv1d.
+        window_X = self.continuous_X[self.active_channels, start_idx:end_idx]
+        window_y = self.continuous_y[end_idx - 1]
+
+        return (
+            torch.as_tensor(window_X, dtype=torch.float32),
+            torch.as_tensor(window_y, dtype=torch.float32),
+        )
 
 class ECABlock(nn.Module):
     """
@@ -135,30 +197,30 @@ class TemporalAttention(nn.Module):
 class ShoulderRCNN(nn.Module):
     def __init__(self, num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS):
         super(ShoulderRCNN, self).__init__()
-        
+
         # --- 1. Multiscale Spatial Feature Extraction (Inception) ---
         self.inception1 = MultiscaleInception1D(in_channels=num_channels, out_channels_per_branch=16)
         self.pool1 = nn.MaxPool1d(kernel_size=5) 
         self.eca1 = ECABlock(kernel_size=3)
         self.drop1 = nn.Dropout(p=0.2)
-        
+
         # Layer 2
         self.inception2 = MultiscaleInception1D(in_channels=48, out_channels_per_branch=32)
         self.pool2 = nn.MaxPool1d(kernel_size=5)
         self.eca2 = ECABlock(kernel_size=3)
         self.drop2 = nn.Dropout(p=0.2)
-        
+
         # --- 3. Temporal Sequence Learning (RNN/LSTM) ---
         self.lstm = nn.LSTM(input_size=96, hidden_size=64, num_layers=1, batch_first=True)
-        
+
         # --- 3.5. Temporal Attention Mechanism ---
         # self.temporal_attention = TemporalAttention(hidden_size=64)
-        
+
         # --- 4. Kinematic Regression Head (DECOUPLED HEADS) ---
         self.fc1 = nn.Linear(64, 32)
         self.relu = nn.ReLU()
         self.drop3 = nn.Dropout(p=0.3)
-        
+
         # Four completely independent linear layers for each degree of freedom
         self.fc_yaw = nn.Linear(32, 1)
         self.fc_pitch = nn.Linear(32, 1)
@@ -167,41 +229,41 @@ class ShoulderRCNN(nn.Module):
 
     def forward(self, x):
         # x shape: (Batch, Channels, Seq_Len)
-        
+
         # Multiscale + Attention Block 1
         x = self.inception1(x)
         x = self.pool1(x)
         x = self.eca1(x)
         x = self.drop1(x)
-        
+
         # Multiscale + Attention Block 2
         x = self.inception2(x)
         x = self.pool2(x)
         x = self.eca2(x)
         x = self.drop2(x)
-        
+
         # Prepare for LSTM
         x = x.permute(0, 2, 1) # Shape: (Batch, Seq_Len, Channels)
-        
+
         # LSTM Temporal processing
         lstm_out, _ = self.lstm(x)
-        
+
         # Temporal Attention Mechanism: Dynamically weight the sequence
         # context_vector = self.temporal_attention(lstm_out)
         last_time_step = lstm_out[:, -1, :]
-        
+
         # Pass through the shared dense layer
         # out = self.fc1(context_vector)
         out = self.fc1(last_time_step)
         out = self.relu(out)
         out = self.drop3(out)
-        
+
         # Pass through the independent, decoupled heads
         yaw = self.fc_yaw(out)
         pitch = self.fc_pitch(out)
         roll = self.fc_roll(out)
         elbow = self.fc_elbow(out)
-        
+
         # Concatenate them back together to match the (Batch, 4) target tensor shape
         return torch.cat([yaw, pitch, roll, elbow], dim=1)
 
@@ -209,58 +271,221 @@ class ShoulderRCNN(nn.Module):
 # ============================== TRAINING PIPELINE ===================================
 # ====================================================================================
 
-def plot_training_history(train_losses, val_losses):
+def save_dataset_distribution(y_train, y_val, output_file='training_dataset_distribution.txt'):
+    """
+    Calculates and saves the dataset distribution across movements to a text file.
+    
+    Args:
+        y_train (np.ndarray): Training targets [num_samples, 4]
+        y_val (np.ndarray): Validation targets [num_samples, 4]
+        output_file (str): Path to save the distribution file
+    """
+    movement_counts_train = {}
+    movement_counts_val = {}
+    
+    # Count samples per movement in training set
+    for class_idx, target_angles in Config.TARGET_MAPPING.items():
+        target_arr = np.array(target_angles, dtype=np.float32)
+        matches = np.all(np.isclose(y_train, target_arr, atol=0.1), axis=1)
+        movement_counts_train[class_idx] = np.sum(matches)
+    
+    # Count samples per movement in validation set
+    for class_idx, target_angles in Config.TARGET_MAPPING.items():
+        target_arr = np.array(target_angles, dtype=np.float32)
+        matches = np.all(np.isclose(y_val, target_arr, atol=0.1), axis=1)
+        movement_counts_val[class_idx] = np.sum(matches)
+    
+    # Write to file
+    total_train = np.sum(list(movement_counts_train.values()))
+    total_val = np.sum(list(movement_counts_val.values()))
+    
+    with open(output_file, 'w') as f:
+        f.write("=" * 65 + "\n")
+        f.write("DATASET DISTRIBUTION ACROSS MOVEMENTS\n")
+        f.write("=" * 65 + "\n\n")
+        
+        f.write(f"{'Movement':<20} {'Index':<8} {'Train':<12} {'Val':<12} {'Total':<8}\n")
+        f.write("-" * 65 + "\n")
+        
+        for class_idx in sorted(Config.TARGET_MAPPING.keys()):
+            movement_name = Config.MOVEMENT_NAMES.get(class_idx, f"Movement {class_idx}")
+            train_count = movement_counts_train.get(class_idx, 0)
+            val_count = movement_counts_val.get(class_idx, 0)
+            total_count = train_count + val_count
+            
+            f.write(f"{movement_name:<20} {class_idx:<8} {train_count:<12} {val_count:<12} {total_count:<8}\n")
+        
+        f.write("-" * 65 + "\n")
+        f.write(f"{'TOTAL':<20} {'':<8} {total_train:<12} {total_val:<12} {total_train + total_val:<8}\n")
+        f.write("=" * 65 + "\n\n")
+        
+        f.write(f"Training samples: {total_train}\n")
+        f.write(f"Validation samples: {total_val}\n")
+        f.write(f"Total samples: {total_train + total_val}\n")
+        f.write(f"Train/Val split: {100*total_train/(total_train+total_val):.1f}% / {100*total_val/(total_train+total_val):.1f}%\n")
+    
+    print(f"\n[Dataset Distribution] Saved to '{output_file}'")
+
+def plot_training_history(train_losses, val_losses, best_epoch=None):
     """Generates and saves a learning curve plot after training."""
     plt.figure(figsize=(10, 6))
     plt.plot(train_losses, label='Training Loss (RMSE)', color='tab:blue', linewidth=2)
     plt.plot(val_losses, label='Validation Loss (RMSE)', color='tab:orange', linewidth=2)
-    
+
+    # Add vertical dotted line at best epoch if provided
+    if best_epoch is not None:
+        plt.axvline(x=best_epoch, color='tab:red', linestyle=':', linewidth=2, 
+                   label=f'Best Model (Epoch {best_epoch + 1})', alpha=0.8)
+
     plt.title('RCNN Regression Learning Curve', fontsize=16, fontweight='bold')
     plt.xlabel('Epochs', fontsize=12)
     plt.ylabel('Root Mean Squared Error', fontsize=12)
     plt.legend(fontsize=12)
     plt.grid(True, linestyle='--', alpha=0.7)
-    
+
     plt.tight_layout()
     plt.savefig('training_loss_curve.png', dpi=150)
     print("\n[Visuals] Learning curve saved as 'training_loss_curve.png'.")
-    plt.show()
+    # plt.show()
 
-def train_model(X_train, y_train, X_val, y_val, batch_size=Config.BATCH_SIZE, epochs=Config.EPOCHS, patience=Config.PATIENCE):
+def _is_continuous_emg_layout(X_data, y_data):
+    """Checks if data is in continuous layout: X=(channels, samples), y=(samples, outputs)."""
+    if not isinstance(X_data, np.ndarray) or not isinstance(y_data, np.ndarray):
+        return False
+    if X_data.ndim != 2 or y_data.ndim != 2:
+        return False
+    if X_data.shape[0] == 0 or X_data.shape[1] == 0:
+        return False
+    if y_data.shape[0] != X_data.shape[1] or y_data.shape[1] == 0:
+        return False
+    return True
+
+
+def _build_data_loader(dataset, batch_size, shuffle, num_workers=None):
+    """Builds DataLoader with worker settings that work for both 0 and >0 workers."""
+    resolved_workers = Config.NUM_DATA_WORKERS if num_workers is None else max(0, int(num_workers))
+
+    loader_kwargs = {
+        "batch_size": batch_size,
+        "shuffle": shuffle,
+        "num_workers": resolved_workers,
+        "pin_memory": True,
+    }
+
+    if resolved_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = Config.PREFETCH_FACTOR
+
+    return DataLoader(dataset, **loader_kwargs)
+
+
+def _prepare_training_datasets(
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    use_on_the_fly=False,
+    window_size=None,
+    step_size=None,
+    active_channels=None,
+):
+    """Builds train/val datasets and returns metadata required by the model."""
+    can_use_on_the_fly = _is_continuous_emg_layout(X_train, y_train) and _is_continuous_emg_layout(X_val, y_val)
+
+    if use_on_the_fly and can_use_on_the_fly:
+        resolved_window_size = int(window_size if window_size is not None else Config.WINDOW_SIZE)
+        resolved_step_size = int(step_size if step_size is not None else Config.INCREMENT)
+
+        train_dataset = ContinuousEMGDataset(
+            continuous_X=np.asarray(X_train, dtype=np.float32),
+            continuous_y=np.asarray(y_train, dtype=np.float32),
+            window_size=resolved_window_size,
+            step_size=resolved_step_size,
+            active_channels=active_channels,
+        )
+        val_dataset = ContinuousEMGDataset(
+            continuous_X=np.asarray(X_val, dtype=np.float32),
+            continuous_y=np.asarray(y_val, dtype=np.float32),
+            window_size=resolved_window_size,
+            step_size=resolved_step_size,
+            active_channels=active_channels,
+        )
+
+        num_channels = len(train_dataset.active_channels)
+        num_outputs = int(np.asarray(y_train).shape[1])
+        return train_dataset, val_dataset, num_channels, num_outputs, True
+
+    if use_on_the_fly and not can_use_on_the_fly:
+        print(
+            "\n[On-The-Fly] Requested, but inputs are not continuous arrays "
+            "(expected X=(channels,samples), y=(samples,outputs))."
+        )
+        print("[On-The-Fly] Falling back to pre-windowed TensorDataset for compatibility.")
+
+    X_train_tensor = torch.as_tensor(np.asarray(X_train, dtype=np.float32))
+    y_train_tensor = torch.as_tensor(np.asarray(y_train, dtype=np.float32))
+    X_val_tensor = torch.as_tensor(np.asarray(X_val, dtype=np.float32))
+    y_val_tensor = torch.as_tensor(np.asarray(y_val, dtype=np.float32))
+
+    train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
+    val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
+
+    num_channels = int(X_train_tensor.shape[1])
+    num_outputs = int(y_train_tensor.shape[1])
+    return train_dataset, val_dataset, num_channels, num_outputs, False
+
+
+def train_model(
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    batch_size=Config.BATCH_SIZE,
+    epochs=Config.EPOCHS,
+    patience=Config.PATIENCE,
+    use_on_the_fly=False,
+    window_size=None,
+    step_size=None,
+    active_channels=None,
+):
     """
     Trains the PyTorch RCNN model using hardware-accelerated optimizations.
     """
-    X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
-    y_train_tensor = torch.tensor(y_train, dtype=torch.float32)
-    X_val_tensor = torch.tensor(X_val, dtype=torch.float32)
-    y_val_tensor = torch.tensor(y_val, dtype=torch.float32)
-    
-    train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
-    val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
-    
+    train_dataset, val_dataset, model_num_channels, model_num_outputs, using_on_the_fly = _prepare_training_datasets(
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        use_on_the_fly=use_on_the_fly,
+        window_size=window_size,
+        step_size=step_size,
+        active_channels=active_channels,
+    )
+
     # --- OPTIMIZATION 1: Multi-threaded Data Loading ---
     # Parallel workers keep GPU fed with data while computation happens
-    train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True, 
-        num_workers=Config.NUM_DATA_WORKERS, pin_memory=True,
-        persistent_workers=True, prefetch_factor=Config.PREFETCH_FACTOR
-    )
-    val_loader = DataLoader(
-        val_dataset, batch_size=batch_size, shuffle=False, 
-        num_workers=Config.NUM_DATA_WORKERS, pin_memory=True,
-        persistent_workers=True, prefetch_factor=Config.PREFETCH_FACTOR
-    )
-    
-    device = torch.device("xpu" if torch.xpu.is_available() else "cpu")
-    device_type = "xpu" if torch.xpu.is_available() else "cpu"
-        
+    loader_workers = Config.NUM_DATA_WORKERS
+    if using_on_the_fly and os.name == "nt" and loader_workers > 0:
+        # Windows spawns worker processes; each process loading Torch/XPU DLLs can exhaust resources.
+        loader_workers = 0
+
+    train_loader = _build_data_loader(train_dataset, batch_size=batch_size, shuffle=False, num_workers=loader_workers)
+    val_loader = _build_data_loader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=loader_workers)
+
+    device, device_type = _resolve_training_device()
+
     print(f"\n[{'-'*10} SYSTEM CHECK {'-'*10}]")
     print(f"Training on device: {device}")
+    print(f"Window slicing mode: {'on-the-fly' if using_on_the_fly else 'pre-windowed'}")
+    if using_on_the_fly:
+        resolved_window_size = int(window_size if window_size is not None else Config.WINDOW_SIZE)
+        resolved_step_size = int(step_size if step_size is not None else Config.INCREMENT)
+        print(f"Window size: {resolved_window_size} | Step size: {resolved_step_size}")
     print(f"Batch size: {batch_size} | Gradient Accumulation: {Config.GRADIENT_ACCUMULATION_STEPS}")
-    print(f"Data workers: {Config.NUM_DATA_WORKERS} | Prefetch: {Config.PREFETCH_FACTOR}")
+    print(f"Data workers: {loader_workers} | Prefetch: {Config.PREFETCH_FACTOR if loader_workers > 0 else 'N/A'}")
     print(f"Effective batch size: {batch_size * Config.GRADIENT_ACCUMULATION_STEPS}")
-    
-    model = ShoulderRCNN(num_channels=X_train.shape[1], num_outputs=y_train.shape[1]).to(device)
+
+    model = ShoulderRCNN(num_channels=model_num_channels, num_outputs=model_num_outputs).to(device)
 
     # optimizer_criterion = AsymmetricKinematicLoss(phantom_pitch_penalty=5.0) 
     optimizer_criterion = nn.MSELoss()
@@ -289,6 +514,7 @@ def train_model(X_train, y_train, X_val, y_val, batch_size=Config.BATCH_SIZE, ep
     best_val_loss = float('inf')
     epochs_no_improve = 0
     history_train_mae, history_val_mae = [], []
+    best_epoch = None
     
     # Start training timer
     training_start_time = time.time()
@@ -361,6 +587,7 @@ def train_model(X_train, y_train, X_val, y_val, batch_size=Config.BATCH_SIZE, ep
         if val_mse_loss < best_val_loss:
             best_val_loss = val_mse_loss
             epochs_no_improve = 0
+            best_epoch = epoch
             torch.save(model.state_dict(), Config.MODEL_SAVE_PATH)
             status = f"--> Saved Best Model"
         else:
@@ -389,7 +616,8 @@ def train_model(X_train, y_train, X_val, y_val, batch_size=Config.BATCH_SIZE, ep
     print(f"\n[{'-'*10} TRAINING COMPLETE {'-'*10}]")
     print(f"Total Training Time: {hours}h {minutes}m {seconds}s")
     print(f"Average Time per Epoch: {avg_epoch_time:.2f}s")
-    plot_training_history(history_train_mae, history_val_mae)
+    plot_training_history(history_train_mae, history_val_mae, best_epoch=best_epoch)
+    save_dataset_distribution(y_train, y_val, output_file='training_dataset_distribution.txt')
     
     model.load_state_dict(torch.load(Config.MODEL_SAVE_PATH))
     return model
@@ -429,7 +657,8 @@ def freeze_backbone(model, num_unfreeze_layers=2):
     print(f"Trainable parameters: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.1f}%)")
 
 def train_transfer_learning(X_train, y_train, X_val, y_val, pretrained_model_path, 
-                           batch_size=None, epochs=None, patience=None, freeze_layers=True):
+                           batch_size=None, epochs=None, patience=None, freeze_layers=True,
+                           use_on_the_fly=False, window_size=None, step_size=None, active_channels=None):
     """
     Fine-tunes a pretrained model on new collected data.
     
@@ -450,36 +679,41 @@ def train_transfer_learning(X_train, y_train, X_val, y_val, pretrained_model_pat
     if patience is None:
         patience = Config.TRANSFER_LEARNING_PATIENCE
     
-    X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
-    y_train_tensor = torch.tensor(y_train, dtype=torch.float32)
-    X_val_tensor = torch.tensor(X_val, dtype=torch.float32)
-    y_val_tensor = torch.tensor(y_val, dtype=torch.float32)
-    
-    train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
-    val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
-    
-    train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True, 
-        num_workers=Config.NUM_DATA_WORKERS, pin_memory=True,
-        persistent_workers=True, prefetch_factor=Config.PREFETCH_FACTOR
+    train_dataset, val_dataset, model_num_channels, model_num_outputs, using_on_the_fly = _prepare_training_datasets(
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        use_on_the_fly=use_on_the_fly,
+        window_size=window_size,
+        step_size=step_size,
+        active_channels=active_channels,
     )
-    val_loader = DataLoader(
-        val_dataset, batch_size=batch_size, shuffle=False, 
-        num_workers=Config.NUM_DATA_WORKERS, pin_memory=True,
-        persistent_workers=True, prefetch_factor=Config.PREFETCH_FACTOR
-    )
+
+    loader_workers = Config.NUM_DATA_WORKERS
+    if using_on_the_fly and os.name == "nt" and loader_workers > 0:
+        # Windows spawns worker processes; each process loading Torch/XPU DLLs can exhaust resources.
+        loader_workers = 0
+
+    train_loader = _build_data_loader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=loader_workers)
+    val_loader = _build_data_loader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=loader_workers)
     
-    device = torch.device("xpu" if torch.xpu.is_available() else "cpu")
-    device_type = "xpu" if torch.xpu.is_available() else "cpu"
+    device, device_type = _resolve_training_device()
     
     print(f"\n[{'-'*10} TRANSFER LEARNING SETUP {'-'*10}]")
     print(f"Loading pretrained model from: {pretrained_model_path}")
     print(f"Training on device: {device}")
+    print(f"Window slicing mode: {'on-the-fly' if using_on_the_fly else 'pre-windowed'}")
+    if using_on_the_fly:
+        resolved_window_size = int(window_size if window_size is not None else Config.WINDOW_SIZE)
+        resolved_step_size = int(step_size if step_size is not None else Config.INCREMENT)
+        print(f"Window size: {resolved_window_size} | Step size: {resolved_step_size}")
     print(f"Batch size: {batch_size} | Epochs: {epochs} | Patience: {patience}")
+    print(f"Data workers: {loader_workers} | Prefetch: {Config.PREFETCH_FACTOR if loader_workers > 0 else 'N/A'}")
     print(f"Learning rate: {Config.TRANSFER_LEARNING_LEARNING_RATE}")
     
     # Load pretrained model
-    model = ShoulderRCNN(num_channels=X_train.shape[1], num_outputs=y_train.shape[1]).to(device)
+    model = ShoulderRCNN(num_channels=model_num_channels, num_outputs=model_num_outputs).to(device)
     try:
         model.load_state_dict(torch.load(pretrained_model_path, map_location=device))
         print(f"✓ Successfully loaded pretrained weights from {pretrained_model_path}")
@@ -519,6 +753,7 @@ def train_transfer_learning(X_train, y_train, X_val, y_val, pretrained_model_pat
     best_val_loss = float('inf')
     epochs_no_improve = 0
     history_train_mae, history_val_mae = [], []
+    best_epoch = None
     
     training_start_time = time.time()
     
@@ -583,6 +818,7 @@ def train_transfer_learning(X_train, y_train, X_val, y_val, pretrained_model_pat
         if val_mse_loss < best_val_loss:
             best_val_loss = val_mse_loss
             epochs_no_improve = 0
+            best_epoch = epoch
             torch.save(model.state_dict(), Config.TRANSFER_LEARNING_MODEL_SAVE_PATH)
             status = f"--> Saved Best Model"
         else:
@@ -609,10 +845,227 @@ def train_transfer_learning(X_train, y_train, X_val, y_val, pretrained_model_pat
     print(f"Total Training Time: {hours}h {minutes}m {seconds}s")
     print(f"Average Time per Epoch: {avg_epoch_time:.2f}s")
     print(f"Best model saved to: {Config.TRANSFER_LEARNING_MODEL_SAVE_PATH}")
-    plot_training_history(history_train_mae, history_val_mae)
+    plot_training_history(history_train_mae, history_val_mae, best_epoch=best_epoch)
+    save_dataset_distribution(y_train, y_val, output_file='transfer_learning_dataset_distribution.txt')
     
     model.load_state_dict(torch.load(Config.TRANSFER_LEARNING_MODEL_SAVE_PATH))
     return model
+
+
+def _resolve_training_device():
+    """Selects the best available training device in priority order."""
+    if torch.cuda.is_available():
+        return torch.device("cuda"), "cuda"
+
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        return torch.device("xpu"), "xpu"
+
+    return torch.device("cpu"), "cpu"
+
+
+def _parse_participant_list(participant_list_raw):
+    """
+    Parses participant IDs from strings like "[1,2,4]" or "1,2,4".
+    Returns empty list for empty input (control case: no collected participants).
+    """
+    if participant_list_raw is None:
+        return None
+
+    text = str(participant_list_raw).strip()
+    
+    # Handle empty input: return empty list for control case (no collected data)
+    if not text or text == "[]":
+        return []
+
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1].strip()
+
+    tokens = [token for token in re.split(r"[,\s]+", text) if token]
+    if len(tokens) == 0:
+        # Empty after bracket removal: return empty list
+        return []
+
+    participants = []
+    for token in tokens:
+        if not token.isdigit():
+            raise ValueError(
+                f"Invalid participant token '{token}'. Use numeric IDs, e.g. [1,2,4]."
+            )
+
+        participant_id = int(token)
+        if participant_id <= 0:
+            raise ValueError(f"Participant IDs must be positive. Got: {participant_id}")
+
+        if participant_id not in participants:
+            participants.append(participant_id)
+
+    return participants
+
+
+def _parse_channel_list(channel_list_raw):
+    """Parses channel indices from strings like "[0,1,4]" or "0,1,4"."""
+    if channel_list_raw is None:
+        return None
+
+    if isinstance(channel_list_raw, (list, tuple, np.ndarray)):
+        tokens = [str(token).strip() for token in channel_list_raw if str(token).strip()]
+    else:
+        text = str(channel_list_raw).strip()
+        if not text:
+            raise ValueError("--active_channels was provided but is empty.")
+
+        if text.startswith("[") and text.endswith("]"):
+            text = text[1:-1].strip()
+
+        tokens = [token for token in re.split(r"[,\s]+", text) if token]
+
+    if len(tokens) == 0:
+        raise ValueError("No channels were found in --active_channels.")
+
+    channels = []
+    for token in tokens:
+        if not token.isdigit():
+            raise ValueError(
+                f"Invalid channel token '{token}'. Use channel indices, e.g. [0,1,4]."
+            )
+
+        channel_idx = int(token)
+        if channel_idx < 0 or channel_idx >= Config.NUM_CHANNELS:
+            raise ValueError(
+                f"Channel indices must be in range [0, {Config.NUM_CHANNELS - 1}]. Got: {channel_idx}"
+            )
+
+        if channel_idx not in channels:
+            channels.append(channel_idx)
+
+    return channels
+
+
+def _discover_collected_participants(folder_path):
+    """Discovers participant IDs from collected files named P#M#.mat."""
+    if not os.path.isdir(folder_path):
+        return []
+
+    participants = set()
+    for file_name in os.listdir(folder_path):
+        if not file_name.lower().endswith(".mat") or file_name.lower().endswith("_labelled.mat"):
+            continue
+
+        match = re.search(r"P(\d+)M(\d+)", os.path.splitext(file_name)[0], flags=re.IGNORECASE)
+        if match:
+            participants.add(int(match.group(1)))
+
+    return sorted(participants)
+
+
+def _discover_secondary_subjects(folder_path):
+    """Discovers subject IDs from secondary folders named Soggetto#."""
+    if not os.path.isdir(folder_path):
+        return []
+
+    subjects = set()
+    for entry in os.listdir(folder_path):
+        match = re.match(r"Soggetto(\d+)$", entry, flags=re.IGNORECASE)
+        if not match:
+            continue
+
+        full_path = os.path.join(folder_path, entry)
+        if os.path.isdir(full_path):
+            subjects.add(int(match.group(1)))
+
+    return sorted(subjects)
+
+
+def _count_samples(X_data, y_data=None):
+    """Returns logical sample count for both pre-windowed and continuous layouts."""
+    if X_data is None:
+        return 0
+
+    if y_data is not None and _is_continuous_emg_layout(X_data, y_data):
+        window_size = int(getattr(Config, "ON_THE_FLY_WINDOW_SIZE", Config.WINDOW_SIZE))
+        step_size = int(getattr(Config, "ON_THE_FLY_STEP_SIZE", Config.INCREMENT))
+        total_samples = int(X_data.shape[1])
+        if total_samples < window_size:
+            return 0
+        return ((total_samples - window_size) // step_size) + 1
+
+    return int(len(X_data))
+
+
+def _extract_window_end_labels(y_data, window_size, step_size):
+    """Returns labels sampled at each sliding-window end index for reporting/counting."""
+    y_arr = np.asarray(y_data, dtype=np.float32)
+    if y_arr.ndim != 2 or y_arr.shape[0] < window_size:
+        num_outputs = y_arr.shape[1] if y_arr.ndim == 2 else Config.NUM_OUTPUTS
+        return np.zeros((0, num_outputs), dtype=np.float32)
+
+    end_indices = np.arange(window_size - 1, y_arr.shape[0], step_size, dtype=np.int64)
+    return y_arr[end_indices]
+
+
+def _concat_dataset_parts(dataset_parts):
+    """Concatenates non-empty dataset tuples [(X, y), ...]."""
+    valid_parts = []
+    for X_part, y_part in dataset_parts:
+        if X_part is None or y_part is None:
+            continue
+        if len(X_part) == 0 or len(y_part) == 0:
+            continue
+        valid_parts.append((X_part, y_part))
+
+    if len(valid_parts) == 0:
+        return None, None
+
+    if len(valid_parts) == 1:
+        return valid_parts[0]
+
+    is_continuous = _is_continuous_emg_layout(valid_parts[0][0], valid_parts[0][1])
+
+    if is_continuous:
+        if not all(_is_continuous_emg_layout(part[0], part[1]) for part in valid_parts):
+            raise ValueError("Cannot concatenate mixed continuous and pre-windowed dataset parts.")
+
+        X_concat = np.concatenate([part[0] for part in valid_parts], axis=1)
+        y_concat = np.concatenate([part[1] for part in valid_parts], axis=0)
+    else:
+        X_concat = np.concatenate([part[0] for part in valid_parts], axis=0)
+        y_concat = np.concatenate([part[1] for part in valid_parts], axis=0)
+
+    return X_concat, y_concat
+
+
+def _print_dataset_distribution(y_train, y_val, title="DATASET DISTRIBUTION", continuous=False, window_size=None, step_size=None):
+    """Prints class-wise train/validation counts for quick sanity checking."""
+    if continuous:
+        resolved_window_size = int(window_size if window_size is not None else Config.WINDOW_SIZE)
+        resolved_step_size = int(step_size if step_size is not None else Config.INCREMENT)
+        y_train_eval = _extract_window_end_labels(y_train, resolved_window_size, resolved_step_size)
+        y_val_eval = _extract_window_end_labels(y_val, resolved_window_size, resolved_step_size)
+    else:
+        y_train_eval = np.asarray(y_train, dtype=np.float32)
+        y_val_eval = np.asarray(y_val, dtype=np.float32)
+
+    print(f"\n[{'-'*10} {title} {'-'*10}]")
+    print(f"{'Class Name':<18} | {'Train':<8} | {'Validation':<8}")
+    print("-" * 42)
+
+    total_train = 0
+    total_val = 0
+
+    for class_idx, target_angles in Config.TARGET_MAPPING.items():
+        target_vec = np.array(target_angles, dtype=np.float32)
+
+        train_count = np.sum(np.all(np.isclose(y_train_eval, target_vec, atol=0.1), axis=1))
+        val_count = np.sum(np.all(np.isclose(y_val_eval, target_vec, atol=0.1), axis=1))
+
+        total_train += train_count
+        total_val += val_count
+
+        class_name = f"Movement {class_idx}" if class_idx != 9 else "Rest (Class 9)"
+        print(f"{class_name:<18} | {train_count:<8} | {val_count:<8}")
+
+    print("-" * 42)
+    print(f"{'TOTAL':<18} | {total_train:<8} | {total_val:<8}\n")
 
 # ====================================================================================
 # ============================== DEBUG/DUMMY TEST ====================================
@@ -620,6 +1073,11 @@ def train_transfer_learning(X_train, y_train, X_val, y_val, pretrained_model_pat
 
 if __name__ == "__main__":
     import argparse
+
+    on_the_fly_enabled = bool(getattr(Config, 'ON_THE_FLY_WINDOW_SLICING', False))
+    on_the_fly_window_size = int(getattr(Config, 'ON_THE_FLY_WINDOW_SIZE', Config.WINDOW_SIZE))
+    on_the_fly_step_size = int(getattr(Config, 'ON_THE_FLY_STEP_SIZE', Config.INCREMENT))
+    on_the_fly_active_channels_raw = getattr(Config, 'ON_THE_FLY_ACTIVE_CHANNELS', None)
     
     parser = argparse.ArgumentParser(description="Train ShoulderRCNN model")
     parser.add_argument('--mode', type=str, choices=['loso', 'transfer', 'standard'], default='loso',
@@ -628,59 +1086,158 @@ if __name__ == "__main__":
                        help='Path to pretrained model (for transfer learning)')
     parser.add_argument('--freeze', action='store_true', default=False,
                        help='Freeze backbone layers during transfer learning')
+    parser.add_argument(
+        '--include_collected',
+        action='store_true',
+        default=False,
+        help='Include collected participants in loso/standard training datasets.',
+    )
+    parser.add_argument(
+        '--collected_participants',
+        type=str,
+        default=None,
+        help='Optional collected participant list for loso/standard, e.g. "[1,2,4]". '
+             'If omitted with --include_collected, all discovered collected participants are used.',
+    )
+    parser.add_argument(
+        '--collected_train_participants',
+        type=str,
+        default=None,
+        help='Optional participant list for collected transfer split, e.g. "[1,2,4]". '
+             'These participants are used for training; unlisted collected participants are excluded from training validation.',
+    )
     args = parser.parse_args()
+
+    try:
+        selected_active_channels = _parse_channel_list(on_the_fly_active_channels_raw)
+    except ValueError as exc:
+        print(f"\nERROR: {exc}")
+        exit(1)
+
+    if on_the_fly_enabled:
+        print("\n[On-The-Fly Windowing] Enabled.")
+        print(f"  - window_size: {on_the_fly_window_size}")
+        print(f"  - step_size: {on_the_fly_step_size}")
+        print(f"  - active_channels: {selected_active_channels if selected_active_channels is not None else 'ALL'}")
+
+    try:
+        selected_collected_for_main_modes = _parse_participant_list(args.collected_participants)
+    except ValueError as exc:
+        print(f"\nERROR: {exc}")
+        exit(1)
+
+    include_collected_main_modes = args.include_collected or (selected_collected_for_main_modes is not None and len(selected_collected_for_main_modes) > 0)
+    collected_raw_path = os.path.join(Config.BASE_DATA_PATH, 'collected', 'raw')
+    collected_edited_path = os.path.join(Config.BASE_DATA_PATH, 'collected', 'edited')
+
+    if include_collected_main_modes and args.mode in ('loso', 'standard'):
+        available_collected = _discover_collected_participants(collected_raw_path)
+        if len(available_collected) == 0:
+            print(f"\nERROR: --include_collected requested but no collected files were found at {collected_raw_path}")
+            exit(1)
+
+        if selected_collected_for_main_modes is None:
+            selected_collected_for_main_modes = available_collected
+        elif len(selected_collected_for_main_modes) > 0:
+            # Only validate if non-empty list was explicitly provided
+            missing_participants = sorted(set(selected_collected_for_main_modes) - set(available_collected))
+            if missing_participants:
+                print(f"\nERROR: Requested collected participants not found: {missing_participants}")
+                print(f"Available collected participants: {available_collected}")
+                exit(1)
+
+        if len(selected_collected_for_main_modes) > 0:
+            print("\n[Collected Integration] Enabled for main training mode.")
+            print(f"  - Included collected participants: {selected_collected_for_main_modes}")
+        else:
+            print("\n[Control Case] No collected participants selected (empty list).")
+    elif selected_collected_for_main_modes is not None and args.mode == 'transfer':
+        print("\n[Info] --collected_participants is ignored in transfer mode.")
+        print("[Info] Use --collected_train_participants for transfer participant splits.")
+        selected_collected_for_main_modes = []
+    else:
+        selected_collected_for_main_modes = []
     
     # ====================================================================================
     # LEAVE-ONE-SUBJECT-OUT (LOSO) TRAINING
     # ====================================================================================
     if args.mode == 'loso':
         print("Loading dataset with Leave-One-Subject-Out Validation...")
-        
-        # 1. Load training data (subjects 1-7)
-        print("\n[LOSO Fold] Loading TRAINING data (Subjects 1-7)...")
-        X_train, y_train = DataPreparation.load_and_prepare_dataset(
-            base_path=Config.BASE_DATA_PATH, 
-            include_subjects=list(range(1, 8))
+
+        secondary_subjects = _discover_secondary_subjects(Config.SECONDARY_DATA_PATH)
+        if len(secondary_subjects) == 0:
+            secondary_subjects = list(range(1, 9))
+            print("[WARNING] Could not auto-discover secondary subjects. Falling back to [1..8].")
+
+        if len(secondary_subjects) < 2:
+            print("ERROR: LOSO requires at least 2 secondary participants.")
+            exit(1)
+
+        # Keep original LOSO behavior: train on all-but-last subject, validate on last subject.
+        train_secondary_subjects = secondary_subjects[:-1]
+        val_secondary_subject = secondary_subjects[-1]
+
+        print(f"\n[LOSO] Training secondary subjects: {train_secondary_subjects}")
+        print(f"[LOSO] Validation secondary subject: {val_secondary_subject}")
+        if len(selected_collected_for_main_modes) > 0:
+            print(f"[LOSO] Appending collected participants to TRAINING only: {selected_collected_for_main_modes}")
+
+        X_train_secondary, y_train_secondary = DataPreparation.load_and_prepare_dataset(
+            base_path=Config.SECONDARY_DATA_PATH,
+            include_subjects=train_secondary_subjects,
+            include_noise_aug=True,
+            return_continuous=on_the_fly_enabled,
         )
-        
-        # 2. Load validation data (subject 8)
-        print("\n[LOSO Fold] Loading VALIDATION data (Subject 8)...")
+
+        train_parts = [(X_train_secondary, y_train_secondary)]
+        if len(selected_collected_for_main_modes) > 0:
+            X_train_collected, y_train_collected = DataPreparation.load_collected_data(
+                folder_path=collected_raw_path,
+                labelled_folder_path=collected_edited_path,
+                augment=True,
+                include_noise_aug=True,
+                include_participants=selected_collected_for_main_modes,
+                return_continuous=on_the_fly_enabled,
+            )
+            train_parts.append((X_train_collected, y_train_collected))
+
+        X_train, y_train = _concat_dataset_parts(train_parts)
+
+        print(f"\n[LOSO] Loading secondary VALIDATION data from Subject {val_secondary_subject}...")
         X_val, y_val = DataPreparation.load_and_prepare_dataset(
-            base_path=Config.BASE_DATA_PATH, 
-            include_subjects=[8]
+            base_path=Config.SECONDARY_DATA_PATH,
+            include_subjects=[val_secondary_subject],
+            include_noise_aug=False,
+            return_continuous=on_the_fly_enabled,
         )
-        
-        if len(X_train) == 0 or len(X_val) == 0:
-            print("ERROR: No data loaded. Check your file paths!")
-        else:
-            
-            print(f"\n[{'-'*10} DATASET DISTRIBUTION {'-'*10}]")
-            print(f"{'Class Name':<18} | {'Train':<8} | {'Validation':<8}")
-            print("-" * 42)
-            
-            total_train = 0
-            total_val = 0
-            
-            for class_idx, target_angles in Config.TARGET_MAPPING.items():
-                target_vec = np.array(target_angles, dtype=np.float32)
-                
-                # Count how many rows exactly match this target vector
-                train_count = np.sum(np.all(y_train == target_vec, axis=1))
-                val_count = np.sum(np.all(y_val == target_vec, axis=1))
-                
-                total_train += train_count
-                total_val += val_count
-                
-                class_name = f"Movement {class_idx}" if class_idx != 9 else "Rest (Class 9)"
-                print(f"{class_name:<18} | {train_count:<8} | {val_count:<8}")
-                
-            print("-" * 42)
-            print(f"{'TOTAL':<18} | {total_train:<8} | {total_val:<8}\n")
-            
-            print(f"Training on {len(X_train)} samples, Validating on {len(X_val)} samples...")
-            
-            # 3. Train the model for real
-            trained_model = train_model(X_train, y_train, X_val, y_val, epochs=Config.EPOCHS, batch_size=Config.BATCH_SIZE, patience=Config.PATIENCE)
+
+        if X_train is None or X_val is None or _count_samples(X_train, y_train) == 0 or _count_samples(X_val, y_val) == 0:
+            print("ERROR: No data loaded. Check your file paths and labels.")
+            exit(1)
+
+        _print_dataset_distribution(
+            y_train,
+            y_val,
+            title="LOSO DATASET DISTRIBUTION",
+            continuous=on_the_fly_enabled,
+            window_size=on_the_fly_window_size,
+            step_size=on_the_fly_step_size,
+        )
+        print(f"Training on {_count_samples(X_train, y_train)} samples, Validating on {_count_samples(X_val, y_val)} samples...")
+
+        train_model(
+            X_train,
+            y_train,
+            X_val,
+            y_val,
+            epochs=Config.EPOCHS,
+            batch_size=Config.BATCH_SIZE,
+            patience=Config.PATIENCE,
+            use_on_the_fly=on_the_fly_enabled,
+            window_size=on_the_fly_window_size,
+            step_size=on_the_fly_step_size,
+            active_channels=selected_active_channels,
+        )
     
     # ====================================================================================
     # TRANSFER LEARNING TRAINING
@@ -689,81 +1246,130 @@ if __name__ == "__main__":
         print("Starting Transfer Learning Training...")
         print(f"Pretrained model: {args.pretrained}")
         print(f"Freeze backbone: {args.freeze}")
-        
-        # 1. Load collected training data
-        print("\n[Transfer Learning] Loading TRAINING data from collected_data/training...")
-        X_train, y_train = DataPreparation.load_collected_data(
-            folder_path='./collected_data/training',
-            augment=True
-        )
-        
-        if X_train is None or len(X_train) == 0:
-            print("\n✗ ERROR: No training data found in ./collected_data/training/")
-            print("STOPPING: Transfer learning requires training data. Please add .mat files to ./collected_data/training/")
+
+        try:
+            selected_train_participants = _parse_participant_list(args.collected_train_participants)
+        except ValueError as exc:
+            print(f"\n✗ ERROR: {exc}")
             exit(1)
+
+        # Optional collected participant selection for TRAINING only.
+        if selected_train_participants is not None and len(selected_train_participants) > 0:
+            collected_raw_path = os.path.join(Config.BASE_DATA_PATH, 'collected', 'raw')
+            collected_edited_path = os.path.join(Config.BASE_DATA_PATH, 'collected', 'edited')
+
+            available_participants = _discover_collected_participants(collected_raw_path)
+            if len(available_participants) == 0:
+                print(f"\n✗ ERROR: No collected files were found at {collected_raw_path}")
+                exit(1)
+
+            missing_participants = sorted(set(selected_train_participants) - set(available_participants))
+            if missing_participants:
+                print(
+                    f"\n✗ ERROR: Requested training participants not found in collected data: {missing_participants}"
+                )
+                print(f"Available collected participants: {available_participants}")
+                exit(1)
+
+            print("\n[Transfer Learning] Using selected collected participants for TRAINING:")
+            print(f"  - Train participants: {selected_train_participants}")
+            print("  - Unlisted collected participants are excluded from training validation")
+            print(f"  - Raw source: {collected_raw_path}")
+
+            print("\n[Transfer Learning] Loading collected TRAINING data from selected participants...")
+            X_train, y_train = DataPreparation.load_collected_data(
+                folder_path=collected_raw_path,
+                labelled_folder_path=collected_edited_path,
+                augment=True,
+                include_noise_aug=True,
+                include_participants=selected_train_participants,
+                return_continuous=on_the_fly_enabled,
+            )
+            X_val_collected, y_val_collected = None, None
+        elif selected_train_participants is None:
+            # Legacy folder-based split (no collected participants specified, try legacy folders)
+            print("\n[Transfer Learning] Loading TRAINING data from collected_data/training...")
+            X_train, y_train = DataPreparation.load_collected_data(
+                folder_path='./collected_data/training',
+                augment=True,
+                include_noise_aug=True,
+                return_continuous=on_the_fly_enabled,
+            )
+
+            print("\n[Transfer Learning] Checking for validation data in collected_data/validation...")
+            X_val_collected, y_val_collected = DataPreparation.load_collected_data(
+                folder_path='./collected_data/validation',
+                augment=True,
+                include_noise_aug=False,
+                return_continuous=on_the_fly_enabled,
+            )
+        else:
+            # Control case: empty list provided, use SECONDARY DATA ONLY (no collected data)
+            print("\n[Control Case] Empty collected participant list provided.")
+            print("[Transfer Learning] Using SECONDARY DATA for both TRAINING and VALIDATION (control case)...")
+            X_train, y_train = DataPreparation.load_and_prepare_dataset(
+                base_path=Config.SECONDARY_DATA_PATH,
+                include_subjects=[1, 2, 3, 4, 5, 6, 7],  # All but subject 8
+                include_noise_aug=True,
+                return_continuous=on_the_fly_enabled,
+            )
+            X_val_collected, y_val_collected = None, None
         
-        # 2. Load collected validation data (if available)
-        print("\n[Transfer Learning] Checking for validation data in collected_data/validation...")
-        X_val_collected, y_val_collected = DataPreparation.load_collected_data(
-            folder_path='./collected_data/validation',
-            augment=True
-        )
+        if X_train is None or _count_samples(X_train, y_train) == 0:
+            print("\n✗ ERROR: No training data available.")
+            print(f"Selected train participants: {selected_train_participants}")
+            exit(1)
         
         # 3. Always load secondary data validation (from subject 8 LOSO fold)
         print("\n[Transfer Learning] Loading VALIDATION data from secondary_data (Subject 8)...")
         X_val_secondary, y_val_secondary = DataPreparation.load_and_prepare_dataset(
-            base_path=Config.BASE_DATA_PATH,
-            include_subjects=[8]
+            base_path=Config.SECONDARY_DATA_PATH,
+            include_subjects=[8],
+            include_noise_aug=False,
+            return_continuous=on_the_fly_enabled,
         )
         
-        if X_val_secondary is None or len(X_val_secondary) == 0:
+        if X_val_secondary is None or _count_samples(X_val_secondary, y_val_secondary) == 0:
             print("✗ ERROR: Could not load secondary validation data!")
             exit(1)
         
         # 4. Combine validation datasets
-        if X_val_collected is not None and len(X_val_collected) > 0:
+        if X_val_collected is not None and _count_samples(X_val_collected, y_val_collected) > 0:
             print(f"\n[Transfer Learning] Combining validation sets:")
-            print(f"  - Collected: {len(X_val_collected)} samples")
-            print(f"  - Secondary: {len(X_val_secondary)} samples")
-            X_val = np.concatenate([X_val_secondary, X_val_collected], axis=0)
-            y_val = np.concatenate([y_val_secondary, y_val_collected], axis=0)
-            print(f"  - Total: {len(X_val)} samples")
+            print(f"  - Collected: {_count_samples(X_val_collected, y_val_collected)} samples")
+            print(f"  - Secondary: {_count_samples(X_val_secondary, y_val_secondary)} samples")
+            X_val, y_val = _concat_dataset_parts([
+                (X_val_secondary, y_val_secondary),
+                (X_val_collected, y_val_collected),
+            ])
+            print(f"  - Total: {_count_samples(X_val, y_val)} samples")
         else:
             print(f"\n[Transfer Learning] No collected validation data found. Using only secondary data validation.")
-            print(f"  - Secondary: {len(X_val_secondary)} samples")
+            print(f"  - Secondary: {_count_samples(X_val_secondary, y_val_secondary)} samples")
             X_val = X_val_secondary
             y_val = y_val_secondary
         
         # 5. Print dataset distribution
-        print(f"\n[{'-'*10} TRANSFER LEARNING DATASET DISTRIBUTION {'-'*10}]")
-        print(f"{'Class Name':<18} | {'Train':<8} | {'Validation':<8}")
-        print("-" * 42)
+        _print_dataset_distribution(
+            y_train,
+            y_val,
+            title="TRANSFER LEARNING DATASET DISTRIBUTION",
+            continuous=on_the_fly_enabled,
+            window_size=on_the_fly_window_size,
+            step_size=on_the_fly_step_size,
+        )
         
-        total_train = 0
-        total_val = 0
-        
-        for class_idx, target_angles in Config.TARGET_MAPPING.items():
-            target_vec = np.array(target_angles, dtype=np.float32)
-            
-            train_count = np.sum(np.all(y_train == target_vec, axis=1))
-            val_count = np.sum(np.all(y_val == target_vec, axis=1))
-            
-            total_train += train_count
-            total_val += val_count
-            
-            class_name = f"Movement {class_idx}" if class_idx != 9 else "Rest (Class 9)"
-            print(f"{class_name:<18} | {train_count:<8} | {val_count:<8}")
-        
-        print("-" * 42)
-        print(f"{'TOTAL':<18} | {total_train:<8} | {total_val:<8}\n")
-        
-        print(f"Training on {len(X_train)} samples, Validating on {len(X_val)} samples...")
+        print(f"Training on {_count_samples(X_train, y_train)} samples, Validating on {_count_samples(X_val, y_val)} samples...")
         
         # 6. Train with transfer learning
         trained_model = train_transfer_learning(
             X_train, y_train, X_val, y_val,
             pretrained_model_path=args.pretrained,
-            freeze_layers=args.freeze
+            freeze_layers=args.freeze,
+            use_on_the_fly=on_the_fly_enabled,
+            window_size=on_the_fly_window_size,
+            step_size=on_the_fly_step_size,
+            active_channels=selected_active_channels,
         )
     
     # ====================================================================================
@@ -771,47 +1377,75 @@ if __name__ == "__main__":
     # ====================================================================================
     elif args.mode == 'standard':
         print("Loading dataset with Standard 80-20 Training-Validation Split...")
-        
-        # 1. Load all data from all subjects
-        print("\n[Standard Mode] Loading ALL data (all subjects)...")
-        X_all, y_all = DataPreparation.load_and_prepare_dataset(
-            base_path=Config.BASE_DATA_PATH, 
-            include_subjects=list(range(1, 9))
+
+        secondary_subjects = _discover_secondary_subjects(Config.SECONDARY_DATA_PATH)
+        if len(secondary_subjects) == 0:
+            secondary_subjects = list(range(1, 9))
+            print("[WARNING] Could not auto-discover secondary subjects. Falling back to [1..8].")
+
+        print("\n[Standard Mode] Loading secondary data...")
+        X_secondary, y_secondary = DataPreparation.load_and_prepare_dataset(
+            base_path=Config.SECONDARY_DATA_PATH,
+            include_subjects=secondary_subjects,
+            include_noise_aug=True,
+            return_continuous=on_the_fly_enabled,
         )
-        
-        if len(X_all) == 0:
-            print("ERROR: No data loaded. Check your file paths!")
-        else:
-            # 2. Split 80-20
-            print("\n[Standard Mode] Performing 80-20 train-validation split...")
-            X_train, X_val, y_train, y_val = train_test_split(
-                X_all, y_all, test_size=0.2, random_state=42, shuffle=True
+
+        dataset_parts = [(X_secondary, y_secondary)]
+
+        if len(selected_collected_for_main_modes) > 0:
+            print("\n[Standard Mode] Loading selected collected participants...")
+            X_collected, y_collected = DataPreparation.load_collected_data(
+                folder_path=collected_raw_path,
+                labelled_folder_path=collected_edited_path,
+                augment=True,
+                include_noise_aug=True,
+                include_participants=selected_collected_for_main_modes,
+                return_continuous=on_the_fly_enabled,
             )
-            
-            print(f"\n[{'-'*10} DATASET DISTRIBUTION {'-'*10}]")
-            print(f"{'Class Name':<18} | {'Train':<8} | {'Validation':<8}")
-            print("-" * 42)
-            
-            total_train = 0
-            total_val = 0
-            
-            for class_idx, target_angles in Config.TARGET_MAPPING.items():
-                target_vec = np.array(target_angles, dtype=np.float32)
-                
-                # Count how many rows exactly match this target vector
-                train_count = np.sum(np.all(y_train == target_vec, axis=1))
-                val_count = np.sum(np.all(y_val == target_vec, axis=1))
-                
-                total_train += train_count
-                total_val += val_count
-                
-                class_name = f"Movement {class_idx}" if class_idx != 9 else "Rest (Class 9)"
-                print(f"{class_name:<18} | {train_count:<8} | {val_count:<8}")
-                
-            print("-" * 42)
-            print(f"{'TOTAL':<18} | {total_train:<8} | {total_val:<8}\n")
-            
-            print(f"Training on {len(X_train)} samples, Validating on {len(X_val)} samples...")
-            
-            # 3. Train the model
-            trained_model = train_model(X_train, y_train, X_val, y_val, epochs=Config.EPOCHS, batch_size=Config.BATCH_SIZE, patience=Config.PATIENCE)
+            dataset_parts.append((X_collected, y_collected))
+
+        X_all, y_all = _concat_dataset_parts(dataset_parts)
+
+        if X_all is None or _count_samples(X_all, y_all) == 0:
+            print("ERROR: No data loaded. Check your file paths and labels.")
+            exit(1)
+
+        print("\n[Standard Mode] Performing 80-20 train-validation split...")
+        if _is_continuous_emg_layout(X_all, y_all):
+            split_idx = int(X_all.shape[1] * (1.0 - Config.TEST_SPLIT))
+            split_idx = max(1, min(split_idx, X_all.shape[1] - 1))
+
+            X_train = X_all[:, :split_idx]
+            X_val = X_all[:, split_idx:]
+            y_train = y_all[:split_idx]
+            y_val = y_all[split_idx:]
+        else:
+            X_train, X_val, y_train, y_val = train_test_split(
+                X_all, y_all, test_size=Config.TEST_SPLIT, random_state=42, shuffle=False
+            )
+
+        _print_dataset_distribution(
+            y_train,
+            y_val,
+            title="DATASET DISTRIBUTION",
+            continuous=on_the_fly_enabled,
+            window_size=on_the_fly_window_size,
+            step_size=on_the_fly_step_size,
+        )
+
+        print(f"Training on {_count_samples(X_train, y_train)} samples, Validating on {_count_samples(X_val, y_val)} samples...")
+
+        train_model(
+            X_train,
+            y_train,
+            X_val,
+            y_val,
+            epochs=Config.EPOCHS,
+            batch_size=Config.BATCH_SIZE,
+            patience=Config.PATIENCE,
+            use_on_the_fly=on_the_fly_enabled,
+            window_size=on_the_fly_window_size,
+            step_size=on_the_fly_step_size,
+            active_channels=selected_active_channels,
+        )

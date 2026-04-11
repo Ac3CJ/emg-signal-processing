@@ -142,8 +142,8 @@ class DataCollectionMode(SignalReadingMode):
                 chunk[ch, s] = self._read_adc_channel(ch)
             time.sleep(sample_delay)
             
-        # Store chunk for later collection
-        self.collected_data.append(chunk)
+        # Store a raw copy before any downstream controller processing.
+        self.collected_data.append(chunk.copy())
         self.sample_count += chunk.shape[1]
         
         return chunk

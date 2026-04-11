@@ -12,56 +12,116 @@ import ControllerConfiguration as Config
 # ================================ NORMALISATION ================================
 # ===============================================================================
 
-class RealTimeGlobalNormalizer:
-    def __init__(self, num_channels=8, initial_max=150.0, spike_threshold=3.0):
-        """
-        Maintains a running global maximum for real-time normalization.
-        
-        Args:
-            initial_max: A conservative starting guess for the max amplitude (mV).
-            spike_threshold: If a new peak is X times larger than the current known max, 
-                             it is rejected as hardware noise.
-        """
-        # Store the running maximums and minimums for each channel
-        self.running_max = np.full(num_channels, initial_max, dtype=np.float32)
-        self.running_min = np.zeros(num_channels, dtype=np.float32)
-        self.spike_threshold = spike_threshold
+def get_rectified_scale_from_minmax(channel_min, channel_max, eps=1e-6):
+    """
+    Converts robust [min, max] bounds into a rectified-domain normalization scale.
 
-    def normalize_window(self, window):
-        """
-        Evaluates a new incoming real-time window, safely updates the global maximums, 
-        and normalizes the window.
-        
-        Args:
-            window (np.ndarray): The incoming real-time window, shape (num_channels, window_samples)
-        """
-        # 1. Find the 95th percentile of the current window to ignore single-sample micro-spikes
-        current_window_peaks = np.percentile(window, 95, axis=1)
-        current_window_baselines = np.percentile(window, 5, axis=1)
+    If normalization happens after rectification, values are non-negative and the
+    correct scale is the larger absolute magnitude between min and max.
+    """
+    min_mag = abs(float(channel_min))
+    max_mag = abs(float(channel_max))
+    scale = max(min_mag, max_mag)
+    if scale < eps:
+        scale = eps
+    return scale
 
-        # 2. Evaluate and safely update the running maximums
-        for c in range(len(self.running_max)):
-            # Update minimums if we find a cleaner baseline
-            if current_window_baselines[c] < self.running_min[c]:
-                self.running_min[c] = current_window_baselines[c]
-                
-            # Update maximums ONLY if it's a biologically valid contraction
-            if current_window_peaks[c] > self.running_max[c]:
-                # SPIKE REJECTION: Is it a massive, instantaneous hardware spike?
-                if current_window_peaks[c] < (self.running_max[c] * self.spike_threshold):
-                    # Valid contraction! Update our global knowledge.
-                    self.running_max[c] = current_window_peaks[c]
-                # Else: Do nothing. The hardware spike is ignored and the previous max is kept.
 
-        # 3. Normalize the window using the historical global values
-        # Reshape for NumPy broadcasting: (num_channels, 1)
-        scale_factors = (self.running_max - self.running_min)[:, np.newaxis]
-        scale_factors[scale_factors < 1e-6] = 1e-6 # Safety
+def get_unrectified_scale_from_minmax(channel_min, channel_max, eps=1e-6):
+    """
+    Converts robust [min, max] bounds into an unrectified-domain normalization scale.
+    
+    For unrectified (bipolar) signals, we normalize to [-1, 1] range using the
+    distance from zero of the larger bound, ensuring symmetry around zero.
+    
+    Args:
+        channel_min (float): Minimum bound from robust statistics.
+        channel_max (float): Maximum bound from robust statistics.
+        eps (float): Small value to prevent division by zero.
+    
+    Returns:
+        float: Scale factor to divide signal by for normalization to [-1, 1].
+    """
+    min_mag = abs(float(channel_min))
+    max_mag = abs(float(channel_max))
+    scale = max(min_mag, max_mag)
+    if scale < eps:
+        scale = eps
+    return scale
+
+
+def applyRobustRectifiedNormalization(continuous_signal, min_max_robust, eps=1e-6):
+    """
+    Normalizes rectified signals channel-wise using robust min/max references.
+
+    Args:
+        continuous_signal (np.ndarray): Shape (num_channels, total_samples), expected rectified.
+        min_max_robust (np.ndarray): Shape (num_channels, 2) with [min, max] per channel.
+    """
+    signal = np.asarray(continuous_signal, dtype=np.float32)
+    minmax = np.asarray(min_max_robust, dtype=np.float32)
+
+    if minmax.ndim != 2:
+        raise ValueError(f"Expected 2D min/max matrix, got shape {minmax.shape}")
+    if minmax.shape[1] != 2 and minmax.shape[0] == 2:
+        minmax = minmax.T
+    if minmax.shape != (signal.shape[0], 2):
+        raise ValueError(
+            f"min/max shape mismatch: signal has {signal.shape[0]} channels, min/max shape is {minmax.shape}"
+        )
+
+    normalized = np.zeros_like(signal, dtype=np.float32)
+    for c in range(signal.shape[0]):
+        scale = get_rectified_scale_from_minmax(minmax[c, 0], minmax[c, 1], eps=eps)
+        normalized[c, :] = np.clip(signal[c, :] / scale, 0.0, 1.0)
+
+    return normalized
+
+
+def applyRobustUnrectifiedNormalization(continuous_signal, min_max_robust, eps=1e-6):
+    """
+    Normalizes unrectified (bipolar) signals channel-wise using robust min/max references.
+    Outputs normalized signals in the range [-1, 1].
+    
+    Args:
+        continuous_signal (np.ndarray): Shape (num_channels, total_samples), unrectified (can be negative).
+        min_max_robust (np.ndarray): Shape (num_channels, 2) with [min, max] per channel.
+        eps (float): Small value to prevent division by zero.
+    
+    Returns:
+        np.ndarray: Normalized signal clipped to [-1, 1] range.
+    """
+    signal = np.asarray(continuous_signal, dtype=np.float32)
+    minmax = np.asarray(min_max_robust, dtype=np.float32)
+
+    if minmax.ndim != 2:
+        raise ValueError(f"Expected 2D min/max matrix, got shape {minmax.shape}")
+    if minmax.shape[1] != 2 and minmax.shape[0] == 2:
+        minmax = minmax.T
+    if minmax.shape != (signal.shape[0], 2):
+        raise ValueError(
+            f"min/max shape mismatch: signal has {signal.shape[0]} channels, min/max shape is {minmax.shape}"
+        )
+
+    normalized = np.zeros_like(signal, dtype=np.float32)
+    for c in range(signal.shape[0]):
+        channel_min = float(minmax[c, 0])
+        channel_max = float(minmax[c, 1])
         
-        normalized_window = (window - self.running_min[:, np.newaxis]) / scale_factors
+        # Calculate the range
+        range_span = channel_max - channel_min
+        if abs(range_span) < eps:
+            range_span = eps
         
-        # 4. Clip to neural network bounds (chops off the rejected hardware spikes)
-        return np.clip(normalized_window, 0.0, 1.0)
+        # Normalize to [0, 1] first, then scale to [-1, 1]
+        # Formula: 2 * (signal - min) / (max - min) - 1
+        normalized[c, :] = 2.0 * (signal[c, :] - channel_min) / range_span - 1.0
+        
+        # Clip to [-1, 1] to handle edge cases
+        normalized[c, :] = np.clip(normalized[c, :], -1.0, 1.0)
+
+    return normalized
+
     
 def applyGlobalNormalization(continuous_signal, percentiles=(1.0, 99.0)):
     """
@@ -91,6 +151,50 @@ def applyGlobalNormalization(continuous_signal, percentiles=(1.0, 99.0)):
         normalized_signal[c, :] = np.clip(scaled, 0.0, 1.0)
         
     return normalized_signal
+
+
+def compute_participant_minmax(mvc_file_path, fs=1000.0, percentiles=(1.0, 99.0), expected_channels=None):
+    """
+    Computes robust per-channel baseline/max from a participant MVC trial.
+
+    The MVC file is processed with the same runtime pipeline
+    (notch -> bandpass -> rectification), then percentile statistics are
+    computed per channel.
+
+    Args:
+        mvc_file_path (str): Path to participant MVC .mat file (PxM10.mat).
+        fs (float): Sampling frequency in Hz.
+        percentiles (tuple): Lower/upper percentiles for baseline/max.
+        expected_channels (int): Optional channel-count validation.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: (baseline, max_vals), each shape (num_channels,).
+    """
+    if not os.path.exists(mvc_file_path):
+        raise FileNotFoundError(f"MVC file not found: {mvc_file_path}")
+
+    mat_contents = spio.loadmat(mvc_file_path)
+    if "EMGDATA" not in mat_contents:
+        raise KeyError(f"EMGDATA not found in MVC file: {mvc_file_path}")
+
+    raw_data = np.asarray(mat_contents["EMGDATA"], dtype=np.float32)
+    if raw_data.ndim != 2:
+        raise ValueError(f"Expected EMGDATA to be 2D, got shape {raw_data.shape}")
+
+    if expected_channels is not None and raw_data.shape[0] != int(expected_channels):
+        raise ValueError(
+            f"Expected {expected_channels} channels, found {raw_data.shape[0]} in {mvc_file_path}"
+        )
+
+    rectified = np.zeros_like(raw_data, dtype=np.float32)
+    for channel_idx in range(raw_data.shape[0]):
+        rectified[channel_idx, :] = applyStandardSEMGProcessing(raw_data[channel_idx, :], fs=fs)
+
+    lower_pct, upper_pct = percentiles
+    baseline = np.percentile(rectified, lower_pct, axis=1).astype(np.float32)
+    max_vals = np.percentile(rectified, upper_pct, axis=1).astype(np.float32)
+
+    return baseline, max_vals
 
 # ====================================================================================
 # ================================ CLASSIC PROCESSING ================================
@@ -239,6 +343,141 @@ def lowpassFilter(signal, fs=1000.0, cutoff=5.0, order=4):
     """
     b, a = scipy.signal.butter(order, cutoff, fs=fs, btype='low', analog=False)
     return scipy.signal.filtfilt(b, a, signal)
+
+def inject_white_noise_to_channels(signal, target_channels, noise_magnitudes):
+    """
+    Injects white noise into specified channels of an EMG signal.
+    
+    Args:
+        signal (np.ndarray): Input signal of shape (num_channels, num_samples)
+        target_channels (list): List of channel indices to inject noise into (0-7 for 8 channels).
+                               Does not need to have all 8 elements.
+        noise_magnitudes (list): List of noise magnitudes corresponding to target_channels.
+                                Must be same length as target_channels.
+                                Each magnitude scales the injected white noise.
+    
+    Returns:
+        np.ndarray: Modified signal with white noise injected into specified channels.
+                   Untargeted channels remain unchanged.
+    
+    Raises:
+        ValueError: If target_channels and noise_magnitudes have different lengths,
+                   or if channel indices are out of bounds.
+    
+    Example:
+        # Inject noise into channels 1 and 3 with magnitudes 10 and 5
+        noisy_signal = inject_white_noise_to_channels(
+            signal, 
+            target_channels=[1, 3], 
+            noise_magnitudes=[10.0, 5.0]
+        )
+    """
+    # Validate inputs
+    if len(target_channels) != len(noise_magnitudes):
+        raise ValueError(
+            f"target_channels and noise_magnitudes must have the same length. "
+            f"Got {len(target_channels)} and {len(noise_magnitudes)}"
+        )
+    
+    # Validate channel indices
+    num_channels = signal.shape[0]
+    for ch_idx in target_channels:
+        if not isinstance(ch_idx, int) or ch_idx < 0 or ch_idx >= num_channels:
+            raise ValueError(
+                f"Channel index {ch_idx} out of bounds. Valid range: [0, {num_channels - 1}]"
+            )
+    
+    # Create a copy to avoid modifying the original
+    noisy_signal = np.copy(signal).astype(np.float32)
+    num_samples = signal.shape[1]
+    
+    # Inject noise into each target channel
+    for ch_idx, noise_mag in zip(target_channels, noise_magnitudes):
+        # Generate white noise (Gaussian, zero-mean, unit variance)
+        white_noise = np.random.normal(loc=0.0, scale=1.0, size=num_samples)
+        
+        # Scale noise by the specified magnitude
+        scaled_noise = white_noise * noise_mag
+        
+        # Inject into target channel
+        noisy_signal[ch_idx, :] += scaled_noise
+    
+    return noisy_signal
+
+
+def inject_white_noise_to_channels_excluding_windows(signal, target_channels, noise_magnitudes, exclude_windows=None):
+    """
+    Injects white noise into specified channels, but EXCLUDES contraction windows.
+    Useful for training augmentation to avoid corrupting contraction data.
+    
+    Args:
+        signal (np.ndarray): Input signal of shape (num_channels, num_samples).
+        target_channels (list): List of channel indices to inject noise into (0-7 for 8 channels).
+        noise_magnitudes (list): List of noise magnitudes corresponding to target_channels.
+                                Must be same length as target_channels.
+        exclude_windows (list): List of (start_idx, end_idx) tuples defining contraction windows
+                               where noise should NOT be injected. If None, injects noise everywhere.
+    
+    Returns:
+        np.ndarray: Modified signal with white noise injected only in non-contraction regions.
+    
+    Raises:
+        ValueError: If target_channels and noise_magnitudes have different lengths,
+                   or if channel indices are out of bounds.
+    
+    Example:
+        # Inject noise everywhere except in marked contraction windows [500:1000] and [2000:3500]
+        noisy_signal = inject_white_noise_to_channels_excluding_windows(
+            signal, 
+            target_channels=[0, 1, 2],
+            noise_magnitudes=[10.0, 10.0, 10.0],
+            exclude_windows=[(500, 1000), (2000, 3500)]
+        )
+    """
+    # Validate inputs
+    if len(target_channels) != len(noise_magnitudes):
+        raise ValueError(
+            f"target_channels and noise_magnitudes must have the same length. "
+            f"Got {len(target_channels)} and {len(noise_magnitudes)}"
+        )
+    
+    # Validate channel indices
+    num_channels = signal.shape[0]
+    for ch_idx in target_channels:
+        if not isinstance(ch_idx, int) or ch_idx < 0 or ch_idx >= num_channels:
+            raise ValueError(
+                f"Channel index {ch_idx} out of bounds. Valid range: [0, {num_channels - 1}]"
+            )
+    
+    # Create a copy to avoid modifying the original
+    noisy_signal = np.copy(signal).astype(np.float32)
+    num_samples = signal.shape[1]
+    
+    # Create a mask for valid regions (outside contraction windows)
+    valid_mask = np.ones(num_samples, dtype=bool)
+    if exclude_windows is not None and len(exclude_windows) > 0:
+        for start_idx, end_idx in exclude_windows:
+            start_idx = int(start_idx)
+            end_idx = int(end_idx)
+            # Clamp to valid range
+            start_idx = max(0, start_idx)
+            end_idx = min(num_samples, end_idx)
+            # Mark these samples as invalid (don't inject noise)
+            valid_mask[start_idx:end_idx] = False
+    
+    # Get indices where noise should be injected
+    valid_indices = np.where(valid_mask)[0]
+    
+    # Inject noise only at valid indices
+    for ch_idx, noise_mag in zip(target_channels, noise_magnitudes):
+        if len(valid_indices) > 0:
+            # Generate white noise only for valid samples
+            white_noise = np.random.normal(loc=0.0, scale=1.0, size=len(valid_indices))
+            scaled_noise = white_noise * noise_mag
+            noisy_signal[ch_idx, valid_indices] += scaled_noise
+    
+    return noisy_signal
+
 
 def applyStandardSEMGProcessing(signal, fs=1000.0):
     """

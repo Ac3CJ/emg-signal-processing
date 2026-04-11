@@ -6,18 +6,51 @@ import SignalProcessing
 from ModelTraining import ShoulderRCNN 
 import ControllerConfiguration as Config
 
+
+def _extract_robust_minmax(mat_data):
+    for key in ("MIN_MAX_ROBUST", "MIN_MAX"):
+        if key not in mat_data:
+            continue
+        matrix = np.asarray(mat_data[key], dtype=np.float32)
+        if matrix.ndim != 2:
+            continue
+        if matrix.shape == (Config.NUM_CHANNELS, 2):
+            return matrix
+        if matrix.shape == (2, Config.NUM_CHANNELS):
+            return matrix.T
+    return None
+
+
+def _resolve_robust_minmax_for_file(file_path, mat_data):
+    matrix = _extract_robust_minmax(mat_data)
+    if matrix is not None:
+        return matrix
+
+    norm_path = file_path.replace('\\', '/')
+    if norm_path.endswith('_labelled.mat'):
+        return None
+
+    if norm_path.endswith('.mat'):
+        labelled_path = norm_path[:-4] + '_labelled.mat'
+        labelled_path = labelled_path.replace('/raw/', '/edited/')
+        try:
+            import scipy.io
+            labelled_mat = scipy.io.loadmat(labelled_path)
+            return _extract_robust_minmax(labelled_mat)
+        except Exception:
+            return None
+
+    return None
+
 def get_predictions_for_file(model, device, file_path):
     import scipy.io
     mat = scipy.io.loadmat(file_path)
     raw_data = mat['EMGDATA']
     num_samples = raw_data.shape[1]
 
-    # Create a real-time normalizer (mimics the live controller's persistent state)
-    live_normalizer = SignalProcessing.RealTimeGlobalNormalizer(
-        num_channels=Config.NUM_CHANNELS,
-        initial_max=150.0,
-        spike_threshold=3.5
-    )
+    robust_minmax = _resolve_robust_minmax_for_file(file_path, mat)
+    if robust_minmax is None:
+        print(f"[ModelValidator] WARNING: MIN_MAX_ROBUST not found for {file_path}. Falling back to per-window percentiles.")
 
     predictions = []
     smoothed_pred = np.zeros(Config.NUM_OUTPUTS)
@@ -35,9 +68,18 @@ def get_predictions_for_file(model, device, file_path):
                 cleaned_window[c, :] = SignalProcessing.applyStandardSEMGProcessing(
                     window_raw[c, :], fs=Config.FS
                 )
-            
-            # 2. Normalize using real-time normalizer with persistent state (CRITICAL: same as live controller)
-            normalized_window = live_normalizer.normalize_window(cleaned_window)
+
+            # 2. Normalize using robust participant bounds when available.
+            if robust_minmax is not None:
+                normalized_window = np.zeros_like(cleaned_window, dtype=np.float32)
+                for c in range(Config.NUM_CHANNELS):
+                    scale = SignalProcessing.get_rectified_scale_from_minmax(
+                        robust_minmax[c, 0],
+                        robust_minmax[c, 1],
+                    )
+                    normalized_window[c, :] = np.clip(cleaned_window[c, :] / scale, 0.0, 1.0)
+            else:
+                normalized_window = SignalProcessing.applyGlobalNormalization(cleaned_window, (1,99))
             
             # Make prediction
             window_tensor = torch.tensor(normalized_window, dtype=torch.float32).unsqueeze(0).to(device)
@@ -47,7 +89,7 @@ def get_predictions_for_file(model, device, file_path):
 
     return np.array(predictions), np.array(window_starts) / Config.FS
 
-def run_collected_validation(model_path, participant_num, base_path='./collected_data/edit'):
+def run_collected_validation(model_path, participant_num, base_path=Config.COLLECTED_DATA_PATH):
     """
     Validates all movements (M1-M9) for a specific participant using collected data.
     Files are named P{p}M{m}.mat in ./collected_data directory.
@@ -67,7 +109,7 @@ def run_collected_validation(model_path, participant_num, base_path='./collected
     print(f"[Collected Data Validation] Processing Participant P{participant_num}...")
     
     for m in range(1, 10):
-        file_path = os.path.join(base_path, f'P{participant_num}M{m}_edit.mat')
+        file_path = os.path.join(base_path, f'P{participant_num}M{m}_labelled.mat')
         
         if not os.path.exists(file_path):
             print(f"  -> Skipping P{participant_num}M{m}: File not found at {file_path}")
@@ -119,8 +161,8 @@ def run_fast_validation(model_path, sim_file=None, predefined=False, base_path='
     if predefined:
         print("[Fast Validation] Running predefined benchmark suite...")
         # test_cases = [(6, 1), (7, 2), (2, 3), (6, 4), (7, 5), (5, 6), (6, 7), (8, 8)]
-        test_cases = [(8, 1), (8, 2), (8, 3), (8, 4), (8, 5), (8, 6), (8, 7), (8, 8), (8, 9)]
-        files_to_process = [os.path.join(base_path, f'Soggetto{p}', f'Movimento{m}.mat') for p, m in test_cases]
+        test_cases = [(8, 1), (8, 2), (8, 3), (8, 4), (8, 5), (8, 6), (8, 7), (8, 8), (8, 9), (6, 1), (7, 2), (2, 3), (6, 4), (7, 5), (5, 6), (6, 7)]
+        files_to_process = [os.path.join(base_path, f'Soggetto{p}', f'Movimento{m}_labelled.mat') for p, m in test_cases]
     else:
         if not sim_file:
             print("ERROR: No simulation file provided for validation.")
@@ -195,7 +237,7 @@ def run_ensemble_validation(model_path, base_path='./secondary_data'):
             if hasattr(Config, 'CORRUPTED_TRIALS') and (p, m) in Config.CORRUPTED_TRIALS:
                 continue
                 
-            file_path = os.path.join(base_path, f'Soggetto{p}', f'Movimento{m}.mat')
+            file_path = os.path.join(base_path, f'Soggetto{p}', f'Movimento{m}_labelled.mat')
             if not os.path.exists(file_path): continue
             
             predictions, time_axis = get_predictions_for_file(model, device, file_path)
@@ -250,14 +292,14 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    print("\n[Model Validator] Starting validation with the following settings:")
+    # print("\n[Model Validator] Starting validation with the following settings:")
     for arg in vars(args):
         print(f"  -> {arg}: {getattr(args, arg)}")
 
     if args.validate_ensemble:
-        run_ensemble_validation(model_path=args.model, base_path=Config.BASE_DATA_PATH)
+        run_ensemble_validation(model_path=args.model, base_path=Config.SECONDARY_DATA_PATH)
     if args.validate_predefined:
-        run_fast_validation(model_path=args.model, predefined=True, base_path=Config.BASE_DATA_PATH)
+        run_fast_validation(model_path=args.model, predefined=True, base_path=Config.SECONDARY_DATA_PATH)
     if args.validate:
         run_fast_validation(model_path=args.model, sim_file=args.sim_file, predefined=False)
     if args.collected is not None:

@@ -84,8 +84,7 @@ scp ControllerConfiguration.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
 scp SignalReading.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
 scp SignalProcessing.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
 scp emg-shoulder-prosthetic-controller.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
-scp ModelTraining.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
-scp DataPreparation.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
+scp NeuralNetworkModels.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
 scp "%MODEL%" %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
 
 if exist current_participant.txt (

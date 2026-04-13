@@ -22,7 +22,7 @@ except Exception:
     QtWidgets = None
 
 import SignalProcessing
-from ModelTraining import ShoulderRCNN 
+import NeuralNetworkModels as NNModels
 import ControllerConfiguration as Config
 
 _QMainWindowBase = QtWidgets.QMainWindow if QtWidgets is not None else object
@@ -111,7 +111,7 @@ class RealTimeProstheticController:
         self.listener_thread.start()
         
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = ShoulderRCNN(num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS).to(self.device)
+        self.model = NNModels.ShoulderRCNN(num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS).to(self.device)
         
         try:
             self.model.load_state_dict(torch.load(model_path, map_location=self.device))

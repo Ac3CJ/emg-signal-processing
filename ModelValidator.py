@@ -3,7 +3,7 @@ import torch
 import argparse
 
 import SignalProcessing
-from ModelTraining import ShoulderRCNN 
+import NeuralNetworkModels as NNModels
 import ControllerConfiguration as Config
 
 
@@ -102,7 +102,7 @@ def run_collected_validation(model_path, participant_num, base_path=Config.COLLE
 
     print(f"\n[Collected Data Validation] Loading Model: {model_path}")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = ShoulderRCNN(num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS).to(device)
+    model = NNModels.ShoulderRCNN(num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
 
@@ -154,7 +154,7 @@ def run_fast_validation(model_path, sim_file=None, predefined=False, base_path='
 
     print(f"\n[Fast Validation] Loading Model: {model_path}")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = ShoulderRCNN(num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS).to(device)
+    model = NNModels.ShoulderRCNN(num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
 
@@ -222,7 +222,7 @@ def run_ensemble_validation(model_path, base_path='./secondary_data'):
     
     print(f"\n[Ensemble Validation] Loading Model: {model_path}")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = ShoulderRCNN(num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS).to(device)
+    model = NNModels.ShoulderRCNN(num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
 

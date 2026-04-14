@@ -24,6 +24,7 @@ except Exception:
 import SignalProcessing
 import NeuralNetworkModels as NNModels
 import ControllerConfiguration as Config
+from FileRepository import DataRepository, FileSelection
 
 _QMainWindowBase = QtWidgets.QMainWindow if QtWidgets is not None else object
 
@@ -56,6 +57,7 @@ class RealTimeProstheticController:
         self.reading_mode = reading_mode
         self.simulate_data = simulate_data
         self.use_hardware = (reading_mode is not None) and (not simulate_data)
+        self.repo = DataRepository()
         
         # --- PARSE TRIAL NAME FOR TITLES ---
         self.trial_name = "Live Stream"
@@ -145,6 +147,13 @@ class RealTimeProstheticController:
             return None
         return f"P{int(token)}"
 
+    @staticmethod
+    def _participant_token_to_int(participant_token):
+        normalised = RealTimeProstheticController._normalize_participant_token(participant_token)
+        if normalised is None:
+            return None
+        return int(normalised[1:])
+
     def _resolve_active_participant(self, participant_id):
         cli_participant = self._normalize_participant_token(participant_id)
         if cli_participant is not None:
@@ -175,8 +184,9 @@ class RealTimeProstheticController:
         return "P1"
 
     def _initialize_calibration_state(self):
-        mvc_raw_dir = os.path.join(Config.BASE_DATA_PATH, "collected", "raw")
-        self.mvc_file_path = os.path.normpath(os.path.join(mvc_raw_dir, f"{self.participant_id}M10.mat"))
+        participant_number = self._participant_token_to_int(self.participant_id)
+        mvc_selection = FileSelection(data_type="collected", participant=participant_number, movement=10)
+        self.mvc_file_path = self.repo.raw_file_path(mvc_selection)
 
         if not os.path.exists(self.mvc_file_path):
             self.is_calibrated = False
@@ -277,12 +287,12 @@ class RealTimeProstheticController:
 
         if sim_file:
             candidates.append(os.path.normpath(sim_file))
-            candidates.append(self._to_labelled_candidate(sim_file))
+            candidates.append(self.repo.labelled_candidate_path(sim_file))
 
         candidates.extend(
             [
-                os.path.join(Config.BASE_DATA_PATH, "collected", "edited", "P1M1_labelled.mat"),
-                os.path.join(Config.BASE_DATA_PATH, "secondary", "edited", "Soggetto1", "Movimento1_labelled.mat"),
+                self.repo.output_file_path(FileSelection(data_type="collected", participant=1, movement=1), create_dirs=False),
+                self.repo.output_file_path(FileSelection(data_type="secondary", participant=1, movement=1), create_dirs=False),
             ]
         )
 
@@ -297,10 +307,7 @@ class RealTimeProstheticController:
                 print(f"[Controller] Loaded MIN_MAX_ROBUST from: {candidate}")
                 return matrix
 
-        for edited_root in (
-            os.path.join(Config.BASE_DATA_PATH, "secondary", "edited"),
-            os.path.join(Config.BASE_DATA_PATH, "collected", "edited"),
-        ):
+        for edited_root in (self.repo.edited_root("secondary"), self.repo.edited_root("collected")):
             if not os.path.isdir(edited_root):
                 continue
 

@@ -9,6 +9,9 @@ from matplotlib.widgets import Button, CheckButtons
 import DataPreparation
 import SignalProcessing
 import ControllerConfiguration as Config
+from FileRepository import DataRepository, FileSelection
+
+REPOSITORY = DataRepository()
 
 # ====================================================================================
 # ============================== MODE 1: WINDOW VIEWER ===============================
@@ -137,11 +140,18 @@ class ParticipantOverlayViewer:
 
 def extract_representative_burst(p, m):
     """Hunts down the first TWO bursts of a specific trial, including the rest period between them."""
-    file_path = os.path.join(Config.BASE_DATA_PATH, f'Soggetto{p}', f'Movimento{m}.mat')
-    if not os.path.exists(file_path): return None
     if (p, m) in Config.SECONDARY_BLACKLIST: return None
-    
-    mat = scipy.io.loadmat(file_path)
+    file_path = REPOSITORY.raw_file_path(FileSelection(data_type="secondary", participant=p, movement=m))
+    if not os.path.exists(file_path):
+        print(f"Skipped Soggetto{p} Movimento{m}: file not found at {file_path}")
+        return None
+
+    try:
+        mat = scipy.io.loadmat(file_path)
+    except Exception as exc:
+        print(f"Skipped Soggetto{p} Movimento{m}: could not read {file_path} ({exc})")
+        return None
+
     raw_data = mat['EMGDATA']
     
     clean_data = np.zeros_like(raw_data)

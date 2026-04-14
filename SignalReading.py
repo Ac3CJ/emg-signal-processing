@@ -9,6 +9,9 @@ from pyqtgraph.Qt import QtCore, QtWidgets
 from abc import ABC, abstractmethod
 
 import ControllerConfiguration as Config
+from FileRepository import DataRepository
+
+REPOSITORY = DataRepository()
 
 # ====================================================================================
 # ========================= HARDWARE READING MODE INTERFACE ==========================
@@ -171,7 +174,7 @@ class DataCollectionMode(SignalReadingMode):
         full_data = np.concatenate(self.collected_data, axis=1)
         
         # Save in same format as secondary_data: EMGDATA key
-        scipy.io.savemat(output_path, {'EMGDATA': full_data})
+        REPOSITORY.save_mat(output_path, {'EMGDATA': full_data})
         
         print(f"[Data Collection] Saved {self.sample_count} samples ({self.sample_count/Config.FS:.2f}s) to {output_path}")
         return output_path

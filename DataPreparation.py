@@ -7,6 +7,7 @@ import scipy.interpolate
 
 import SignalProcessing 
 import ControllerConfiguration as Config
+from FileRepository import DataRepository, FileSelection
 
 
 def _extract_robust_minmax_matrix(mat_data):
@@ -350,6 +351,10 @@ def load_and_prepare_dataset(
 		labelled_base_path = base_path + "/secondary/edited"
 	else:
 		labelled_base_path = base_path.replace('/raw', '/edited')
+
+	repository = DataRepository.from_standard_path(labelled_base_path)
+	if repository is None:
+		repository = DataRepository.from_standard_path(base_path)
 	
 	all_active_bursts = []
 	all_active_targets = []
@@ -380,7 +385,13 @@ def load_and_prepare_dataset(
 				continue
 			
 			# Try to load pre-labelled windows from the labelled directory
-			label_path = os.path.join(labelled_base_path, f'Soggetto{p}', f'Movimento{m}_labelled.mat')
+			if repository is not None:
+				label_path = repository.output_file_path(
+					FileSelection(data_type="secondary", participant=p, movement=m),
+					create_dirs=False,
+				)
+			else:
+				label_path = os.path.join(labelled_base_path, f'Soggetto{p}', f'Movimento{m}_labelled.mat')
 			if not os.path.exists(label_path):
 				raise FileNotFoundError(f"Expected file not found: {label_path}")
 			
@@ -587,49 +598,77 @@ def load_collected_data(
 	if not os.path.exists(folder_path):
 		print(f"[WARNING] Folder does not exist: {folder_path}")
 		return None, None
+
+	repository = DataRepository.from_standard_path(folder_path)
+	use_repository_paths = repository is not None and os.path.normpath(folder_path) == os.path.normpath(repository.raw_root("collected"))
 	
 	# Infer labelled folder path
 	if labelled_folder_path is None:
 		labelled_folder_path = folder_path.replace('/raw', '/edited')
 		if not os.path.exists(labelled_folder_path):
 			labelled_folder_path = folder_path.replace('collected_data', 'biosignal_data/collected/edited')
+	if use_repository_paths:
+		labelled_folder_path = repository.edited_root("collected")
 	
-	mat_files = [f for f in os.listdir(folder_path) if f.endswith('.mat') and not f.endswith('_labelled.mat')]
-	if len(mat_files) == 0:
-		print(f"[WARNING] No .mat files found in {folder_path}")
-		return None, None
-
-	participant_filter = None
-	if include_participants is not None:
-		participant_filter = set()
-		for participant in include_participants:
-			try:
-				participant_filter.add(int(participant))
-			except (TypeError, ValueError):
-				continue
-
-		filtered_files = []
-		skipped_non_matching = 0
-		for file_name in mat_files:
-			match = re.search(r'P(\d+)M(\d+)', os.path.splitext(file_name)[0], flags=re.IGNORECASE)
-			if not match:
-				skipped_non_matching += 1
-				continue
-
-			participant_id = int(match.group(1))
-			if participant_id in participant_filter:
-				filtered_files.append(file_name)
-
-		mat_files = filtered_files
-		print(f"[Collected Data] Participant filter enabled: {sorted(participant_filter)}")
-		if skipped_non_matching > 0:
-			print(f"[Collected Data] Skipped {skipped_non_matching} files that did not match P#M# naming.")
-
+	if use_repository_paths:
+		participants = repository.discover_participants("collected")
+		if include_participants is not None:
+			participant_filter = set()
+			for participant in include_participants:
+				try:
+					participant_filter.add(int(participant))
+				except (TypeError, ValueError):
+					continue
+			participants = [participant for participant in participants if participant in participant_filter]
+			print(f"[Collected Data] Participant filter enabled: {sorted(participant_filter)}")
+			if len(participants) == 0:
+				print(f"[WARNING] No files matched selected participants in {folder_path}")
+				return None, None
+		selection_entries = repository.iter_file_selections("collected", participants)
+	else:
+		mat_files = [f for f in os.listdir(folder_path) if f.endswith('.mat') and not f.endswith('_labelled.mat')]
 		if len(mat_files) == 0:
-			print(f"[WARNING] No files matched selected participants in {folder_path}")
+			print(f"[WARNING] No .mat files found in {folder_path}")
 			return None, None
+		selection_entries = [(None, mat_file) for mat_file in sorted(mat_files)]
+
+	if not use_repository_paths:
+		participant_filter = None
+		if include_participants is not None:
+			participant_filter = set()
+			for participant in include_participants:
+				try:
+					participant_filter.add(int(participant))
+				except (TypeError, ValueError):
+					continue
+
+			filtered_files = []
+			skipped_non_matching = 0
+			for file_name in mat_files:
+				match = re.search(r'P(\d+)M(\d+)', os.path.splitext(file_name)[0], flags=re.IGNORECASE)
+				if not match:
+					skipped_non_matching += 1
+					continue
+
+				participant_id = int(match.group(1))
+				if participant_id in participant_filter:
+					filtered_files.append(file_name)
+
+			mat_files = filtered_files
+			print(f"[Collected Data] Participant filter enabled: {sorted(participant_filter)}")
+			if skipped_non_matching > 0:
+				print(f"[Collected Data] Skipped {skipped_non_matching} files that did not match P#M# naming.")
+
+			if len(mat_files) == 0:
+				print(f"[WARNING] No files matched selected participants in {folder_path}")
+				return None, None
+
+	if use_repository_paths:
+		expected_file_count = len(selection_entries)
+	else:
+		expected_file_count = len(mat_files)
 	
-	print(f"[Collected Data] Found {len(mat_files)} .mat files in {folder_path}")
+	print(f"[Collected Data] Found {expected_file_count} .mat files in {folder_path}")
 	print(f"[Collected Data] Using labelled windows from: {labelled_folder_path}")
 	if include_noise_aug and augment:
 		print(f"[Collected Data] Noise augmentation BEFORE filtering enabled: {_resolve_training_noise_magnitudes()}")
@@ -641,10 +680,24 @@ def load_collected_data(
 	X_data = []
 	y_data = []
 	
-	for mat_file in sorted(mat_files):
-		file_path = os.path.join(folder_path, mat_file)
+	for participant_or_none, entry in selection_entries:
+		if use_repository_paths:
+			selection = entry
+			participant = int(selection.participant)
+			movement = int(selection.movement)
+			file_path = repository.raw_file_path(selection)
+			mat_file = f'P{participant}M{movement}.mat'
+			labelled_file = repository.output_file_path(selection, create_dirs=False)
+		else:
+			mat_file = entry
+			file_path = os.path.join(folder_path, mat_file)
+			labelled_file = os.path.join(labelled_folder_path, mat_file.replace('.mat', '_labelled.mat'))
 		
 		try:
+			if use_repository_paths and not repository.is_readable_mat(file_path):
+				print(f"  [SKIP] {mat_file}: No EMGDATA found or file unreadable")
+				continue
+
 			mat = scipy.io.loadmat(file_path)
 			if 'EMGDATA' not in mat:
 				print(f"  [SKIP] {mat_file}: No EMGDATA found")
@@ -652,7 +705,6 @@ def load_collected_data(
 			
 			raw_data = mat['EMGDATA']
 
-			labelled_file = os.path.join(labelled_folder_path, mat_file.replace('.mat', '_labelled.mat'))
 			label_mat = None
 			robust_minmax = None
 			if os.path.exists(labelled_file):

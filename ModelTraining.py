@@ -13,6 +13,9 @@ import re
 import DataPreparation
 import ControllerConfiguration as Config
 import NeuralNetworkModels as NNModels
+from FileRepository import DataRepository
+
+REPOSITORY = DataRepository()
 
 # GPU Optimization Settings
 torch.backends.cudnn.benchmark = True  # Auto-tune CUDA kernels
@@ -693,41 +696,6 @@ def _parse_channel_list(channel_list_raw):
     return channels
 
 
-def _discover_collected_participants(folder_path):
-    """Discovers participant IDs from collected files named P#M#.mat."""
-    if not os.path.isdir(folder_path):
-        return []
-
-    participants = set()
-    for file_name in os.listdir(folder_path):
-        if not file_name.lower().endswith(".mat") or file_name.lower().endswith("_labelled.mat"):
-            continue
-
-        match = re.search(r"P(\d+)M(\d+)", os.path.splitext(file_name)[0], flags=re.IGNORECASE)
-        if match:
-            participants.add(int(match.group(1)))
-
-    return sorted(participants)
-
-
-def _discover_secondary_subjects(folder_path):
-    """Discovers subject IDs from secondary folders named Soggetto#."""
-    if not os.path.isdir(folder_path):
-        return []
-
-    subjects = set()
-    for entry in os.listdir(folder_path):
-        match = re.match(r"Soggetto(\d+)$", entry, flags=re.IGNORECASE)
-        if not match:
-            continue
-
-        full_path = os.path.join(folder_path, entry)
-        if os.path.isdir(full_path):
-            subjects.add(int(match.group(1)))
-
-    return sorted(subjects)
-
-
 def _count_samples(X_data, y_data=None):
     """Returns logical sample count for both pre-windowed and continuous layouts."""
     if X_data is None:
@@ -879,11 +847,11 @@ if __name__ == "__main__":
         exit(1)
 
     include_collected_main_modes = args.include_collected or (selected_collected_for_main_modes is not None and len(selected_collected_for_main_modes) > 0)
-    collected_raw_path = os.path.join(Config.BASE_DATA_PATH, 'collected', 'raw')
-    collected_edited_path = os.path.join(Config.BASE_DATA_PATH, 'collected', 'edited')
+    collected_raw_path = REPOSITORY.raw_root('collected')
+    collected_edited_path = REPOSITORY.edited_root('collected')
 
     if include_collected_main_modes and args.mode in ('loso', 'standard'):
-        available_collected = _discover_collected_participants(collected_raw_path)
+        available_collected = REPOSITORY.discover_participants('collected')
         if len(available_collected) == 0:
             print(f"\nERROR: --include_collected requested but no collected files were found at {collected_raw_path}")
             exit(1)
@@ -916,7 +884,7 @@ if __name__ == "__main__":
     if args.mode == 'loso':
         print("Loading dataset with Leave-One-Subject-Out Validation...")
 
-        secondary_subjects = _discover_secondary_subjects(Config.SECONDARY_DATA_PATH)
+        secondary_subjects = REPOSITORY.discover_participants('secondary')
         if len(secondary_subjects) == 0:
             secondary_subjects = list(range(1, 9))
             print("[WARNING] Could not auto-discover secondary subjects. Falling back to [1..8].")
@@ -1007,10 +975,10 @@ if __name__ == "__main__":
 
         # Optional collected participant selection for TRAINING only.
         if selected_train_participants is not None and len(selected_train_participants) > 0:
-            collected_raw_path = os.path.join(Config.BASE_DATA_PATH, 'collected', 'raw')
-            collected_edited_path = os.path.join(Config.BASE_DATA_PATH, 'collected', 'edited')
+            collected_raw_path = REPOSITORY.raw_root('collected')
+            collected_edited_path = REPOSITORY.edited_root('collected')
 
-            available_participants = _discover_collected_participants(collected_raw_path)
+            available_participants = REPOSITORY.discover_participants('collected')
             if len(available_participants) == 0:
                 print(f"\n✗ ERROR: No collected files were found at {collected_raw_path}")
                 exit(1)
@@ -1130,7 +1098,7 @@ if __name__ == "__main__":
     elif args.mode == 'standard':
         print("Loading dataset with Standard 80-20 Training-Validation Split...")
 
-        secondary_subjects = _discover_secondary_subjects(Config.SECONDARY_DATA_PATH)
+        secondary_subjects = REPOSITORY.discover_participants('secondary')
         if len(secondary_subjects) == 0:
             secondary_subjects = list(range(1, 9))
             print("[WARNING] Could not auto-discover secondary subjects. Falling back to [1..8].")

@@ -1,10 +1,13 @@
 import numpy as np
 import torch
 import argparse
+import os
+import scipy.io
 
 import SignalProcessing
 import NeuralNetworkModels as NNModels
 import ControllerConfiguration as Config
+from FileRepository import DataRepository, FileSelection
 
 
 def _extract_robust_minmax(mat_data):
@@ -26,19 +29,16 @@ def _resolve_robust_minmax_for_file(file_path, mat_data):
     if matrix is not None:
         return matrix
 
-    norm_path = file_path.replace('\\', '/')
-    if norm_path.endswith('_labelled.mat'):
+    repository = DataRepository()
+    labelled_path = repository.labelled_candidate_path(file_path)
+    if os.path.normpath(labelled_path) == os.path.normpath(file_path):
         return None
 
-    if norm_path.endswith('.mat'):
-        labelled_path = norm_path[:-4] + '_labelled.mat'
-        labelled_path = labelled_path.replace('/raw/', '/edited/')
-        try:
-            import scipy.io
-            labelled_mat = scipy.io.loadmat(labelled_path)
-            return _extract_robust_minmax(labelled_mat)
-        except Exception:
-            return None
+    try:
+        labelled_mat = scipy.io.loadmat(labelled_path)
+        return _extract_robust_minmax(labelled_mat)
+    except Exception:
+        return None
 
     return None
 
@@ -106,10 +106,18 @@ def run_collected_validation(model_path, participant_num, base_path=Config.COLLE
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
 
+    repository = DataRepository.from_standard_path(base_path)
+
     print(f"[Collected Data Validation] Processing Participant P{participant_num}...")
     
     for m in range(1, 10):
-        file_path = os.path.join(base_path, f'P{participant_num}M{m}_labelled.mat')
+        if repository is not None:
+            file_path = repository.output_file_path(
+                FileSelection(data_type="collected", participant=participant_num, movement=m),
+                create_dirs=False,
+            )
+        else:
+            file_path = os.path.join(base_path, f'P{participant_num}M{m}_labelled.mat')
         
         if not os.path.exists(file_path):
             print(f"  -> Skipping P{participant_num}M{m}: File not found at {file_path}")
@@ -147,7 +155,8 @@ def run_collected_validation(model_path, participant_num, base_path=Config.COLLE
 def run_fast_validation(model_path, sim_file=None, predefined=False, base_path='./secondary_data'):
     import matplotlib.pyplot as plt
     import os
-    import re
+
+    repository = DataRepository.from_standard_path(base_path)
     
     output_dir = 'kinematic-plots'
     os.makedirs(output_dir, exist_ok=True)
@@ -162,7 +171,16 @@ def run_fast_validation(model_path, sim_file=None, predefined=False, base_path='
         print("[Fast Validation] Running predefined benchmark suite...")
         # test_cases = [(6, 1), (7, 2), (2, 3), (6, 4), (7, 5), (5, 6), (6, 7), (8, 8)]
         test_cases = [(8, 1), (8, 2), (8, 3), (8, 4), (8, 5), (8, 6), (8, 7), (8, 8), (8, 9), (6, 1), (7, 2), (2, 3), (6, 4), (7, 5), (5, 6), (6, 7)]
-        files_to_process = [os.path.join(base_path, f'Soggetto{p}', f'Movimento{m}_labelled.mat') for p, m in test_cases]
+        if repository is not None:
+            files_to_process = [
+                repository.output_file_path(
+                    FileSelection(data_type='secondary', participant=p, movement=m),
+                    create_dirs=False,
+                )
+                for p, m in test_cases
+            ]
+        else:
+            files_to_process = [os.path.join(base_path, f'Soggetto{p}', f'Movimento{m}_labelled.mat') for p, m in test_cases]
     else:
         if not sim_file:
             print("ERROR: No simulation file provided for validation.")
@@ -174,11 +192,9 @@ def run_fast_validation(model_path, sim_file=None, predefined=False, base_path='
             print(f"  -> Skipping: File not found at {file_path}")
             continue
 
-        match = re.search(r'Soggetto(\d+).*Movimento(\d+)', file_path.replace('\\', '/'))
-        if match:
-            subject_id = match.group(1)
-            m = match.group(2)
-            trial_name = f"{m}-kinematics-P{subject_id}M{m}"
+        selection = repository.selection_from_path(file_path) if repository is not None else None
+        if selection is not None:
+            trial_name = f"{selection.movement}-kinematics-P{selection.participant}M{selection.movement}"
         else:
             trial_name = "Unknown_Trial"
 
@@ -226,6 +242,8 @@ def run_ensemble_validation(model_path, base_path='./secondary_data'):
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
 
+    repository = DataRepository.from_standard_path(base_path)
+
     for m in range(1, 10):
         print(f"Aggregating full trials for Movement {m}...")
         all_subject_preds = []
@@ -237,7 +255,13 @@ def run_ensemble_validation(model_path, base_path='./secondary_data'):
             if hasattr(Config, 'SECONDARY_BLACKLIST') and (p, m) in Config.SECONDARY_BLACKLIST:
                 continue
                 
-            file_path = os.path.join(base_path, f'Soggetto{p}', f'Movimento{m}_labelled.mat')
+            if repository is not None:
+                file_path = repository.output_file_path(
+                    FileSelection(data_type='secondary', participant=p, movement=m),
+                    create_dirs=False,
+                )
+            else:
+                file_path = os.path.join(base_path, f'Soggetto{p}', f'Movimento{m}_labelled.mat')
             if not os.path.exists(file_path): continue
             
             predictions, time_axis = get_predictions_for_file(model, device, file_path)

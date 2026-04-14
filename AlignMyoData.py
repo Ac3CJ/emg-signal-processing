@@ -1,6 +1,9 @@
 import os
 import scipy.io
 import numpy as np
+from FileRepository import DataRepository
+
+REPOSITORY = DataRepository()
 
 def align_myo_data(input_dir=r".\collected_data", subject="P3"):
     """
@@ -25,7 +28,7 @@ def align_myo_data(input_dir=r".\collected_data", subject="P3"):
             continue
 
         # 1. Load the .mat file
-        mat = scipy.io.loadmat(input_path)
+        mat = REPOSITORY.load_mat(input_path)
 
         if 'EMGDATA' not in mat:
             print(f"[-] Skipping {input_filename}: 'EMGDATA' key not found.")
@@ -35,7 +38,7 @@ def align_myo_data(input_dir=r".\collected_data", subject="P3"):
 
         aligned_data = raw_data - np.mean(raw_data, axis=1, keepdims=True)
 
-        scipy.io.savemat(output_path, {'EMGDATA': aligned_data})
+        REPOSITORY.save_mat(output_path, {'EMGDATA': aligned_data})
         print(f"[+] Successfully processed and saved: {output_filename}")
 
     print("\nAlignment complete!")

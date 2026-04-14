@@ -10,29 +10,27 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.io as sio
+from FileRepository import DataRepository, FileSelection
+
+REPOSITORY = DataRepository()
 
 
-def load_trial_data(base_path, movimento_num):
+def load_trial_data(subject_num, movimento_num):
     """Load EMG, kinematics, and timing data for a single movement"""
     
     # Load EMG (key is 'EMGDATA')
-    emg_path = os.path.join(base_path, f'Movimento{movimento_num}.mat')
+    emg_path = REPOSITORY.raw_file_path(FileSelection(data_type='secondary', participant=subject_num, movement=movimento_num))
     data = sio.loadmat(emg_path)
     emg = data['EMGDATA'].astype(np.float64)
     
     # Load kinematics (key is 'angolospalla')
-    kin_path = os.path.join(base_path, f'MovimentoAngS{movimento_num}.mat')
+    kin_path = REPOSITORY.secondary_kinematics_file_path(subject_num, movimento_num)
     data = sio.loadmat(kin_path)
     kinematics = data['angolospalla'].flatten().astype(np.float64)
     
     # Load timing (naming: M1-8 use InizioFineSteady[11-18], M9 uses InizioFineRest12)
-    if movimento_num == 9:
-        timing_path = os.path.join(base_path, f'InizioFineRest12.mat')
-        key_name = 'InizioFineRest12'
-    else:
-        timing_num = movimento_num + 10  # M1->11, M2->12, etc.
-        timing_path = os.path.join(base_path, f'InizioFineSteady{timing_num}.mat')
-        key_name = f'InizioFineSteady{timing_num}'
+    timing_path = REPOSITORY.secondary_timing_file_path(subject_num, movimento_num)
+    key_name = 'InizioFineRest12' if movimento_num == 9 else f'InizioFineSteady{movimento_num + 10}'
     
     data = sio.loadmat(timing_path)
     timing = data[key_name].astype(np.uint16)
@@ -107,14 +105,17 @@ def build_common_time_domain(emg, kinematics, timing, fs_emg=1000.0):
     }
 
 
-def visualize_full_alignment(base_path, movimento_num=1, fs_emg=1000.0, subject_label='Soggetto1', out_dir='.'):
+def visualize_full_alignment(subject_num, movimento_num=1, fs_emg=1000.0, subject_label=None, out_dir='.'):
     """Create alignment visualizations with explicit shared time-domain projection."""
     
     try:
-        emg, kinematics, timing = load_trial_data(base_path, movimento_num)
+        emg, kinematics, timing = load_trial_data(subject_num, movimento_num)
     except Exception as e:
         print(f"  Could not load Movimento {movimento_num}: {e}")
         return
+
+    if subject_label is None:
+        subject_label = f'Soggetto{subject_num}'
     
     alignment = build_common_time_domain(emg, kinematics, timing, fs_emg=fs_emg)
     time_emg = alignment['time_emg']
@@ -329,7 +330,7 @@ def main():
     """Generate visualizations."""
     args = parse_args()
 
-    base_path = os.path.join('./biosignal_data/secondary/raw', f'Soggetto{args.subject}')
+    base_path = REPOSITORY.secondary_subject_root(args.subject)
 
     if not os.path.exists(base_path):
         print(f'Error: Path not found: {base_path}')
@@ -346,7 +347,7 @@ def main():
     for mov in args.movements:
         print(f'\nMovimento {mov}:')
         visualize_full_alignment(
-            base_path,
+            args.subject,
             movimento_num=mov,
             fs_emg=args.fs_emg,
             subject_label=f'Soggetto{args.subject}',

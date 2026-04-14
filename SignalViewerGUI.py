@@ -50,6 +50,7 @@ from matplotlib.widgets import SpanSelector
 import ControllerConfiguration as Config
 import DataPreparation
 import SignalProcessing
+from FileRepository import DataRepository
 from LabelSignalData import EMGSignalProcessor
 
 
@@ -75,6 +76,7 @@ class SignalViewerGUI(QMainWindow):
         self.channel_map = dict(getattr(Config, "CHANNEL_MAP", {i: f"Channel {i}" for i in range(self.num_channels)}))
 
         self.signal_processor = EMGSignalProcessor(fs=self.fs)
+        self.repo = DataRepository()
 
         self.primary_signal: Optional[LoadedSignal] = None
         self.secondary_signal: Optional[LoadedSignal] = None
@@ -288,7 +290,7 @@ class SignalViewerGUI(QMainWindow):
 
         robust = DataPreparation._extract_robust_minmax_matrix(mat)
         if robust is None:
-            candidate = self._to_labelled_candidate(file_path)
+            candidate = self.repo.labelled_candidate_path(file_path)
             if candidate and os.path.exists(candidate):
                 try:
                     labelled_mat = scipy.io.loadmat(candidate)
@@ -297,18 +299,6 @@ class SignalViewerGUI(QMainWindow):
                     robust = None
 
         return LoadedSignal(file_path=file_path, raw_data=raw, robust_minmax=robust)
-
-    @staticmethod
-    def _to_labelled_candidate(path: str) -> Optional[str]:
-        norm = path.replace("\\", "/")
-        if not norm.endswith(".mat"):
-            return None
-        if norm.endswith("_labelled.mat"):
-            return os.path.normpath(norm)
-
-        candidate = norm[:-4] + "_labelled.mat"
-        candidate = candidate.replace("/raw/", "/edited/")
-        return os.path.normpath(candidate)
 
     # ------------------------------------------------------------------
     # Processing and plotting

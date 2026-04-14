@@ -1,7 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-import re
 import scipy.io
 import scipy.signal
 from matplotlib.widgets import CheckButtons, Button
@@ -10,6 +9,7 @@ from PIL import Image
 
 import SignalProcessing
 import ControllerConfiguration as Config
+from FileRepository import DataRepository
 
 # Sampling rate from Rivela et al. (1.0 kHz)
 FS = 1000.0 
@@ -24,24 +24,6 @@ CHANNEL_MAP = {
     6: "Infraspinatus",
     7: "Latissimus Dorsi"
 }
-
-
-def _discover_collected_participants(base_data_path):
-    participants = set()
-
-    if not os.path.exists(base_data_path):
-        return []
-
-    for filename in os.listdir(base_data_path):
-        if not filename.lower().endswith('.mat'):
-            continue
-
-        match = re.search(r'P(\d+)M(\d+)', filename, flags=re.IGNORECASE)
-        if match:
-            participants.add(int(match.group(1)))
-
-    return sorted(participants)
-
 
 def _normalise_participant_ids(participant_ids):
     if participant_ids is None:
@@ -171,38 +153,69 @@ def generate_all_signal_images(base_data_path=None, save_path=None, data_structu
     print(f"  Notch: {Config.NOTCH_FREQ} Hz")
     print(f"  Bandpass: {Config.BANDPASS_LOW}-{Config.BANDPASS_HIGH} Hz")
     print(f"  TKEO lowpass cutoff: 5.0 Hz\n")
+
+    repository = DataRepository.from_standard_path(base_data_path)
     
     if data_structure == 'secondary':
         # Secondary: Nested Soggetto{p} structure, 8 participants × 9 movements
-        for p in range(1, 9):
-            for m in range(1, 10):
-                file_name = os.path.join(base_data_path, f'Soggetto{p}', f'Movimento{m}_labelled.mat')
-                
+        if repository is not None:
+            trial_selections = repository.iter_file_selections('secondary')
+            for selection in trial_selections:
+                file_name = repository.output_file_path(selection, create_dirs=False)
+
                 if not os.path.exists(file_name):
                     print(f"[-] Skipping missing file: {file_name}")
                     continue
-                    
+
                 try:
                     mat_contents = scipy.io.loadmat(file_name)
                     if 'EMGDATA' not in mat_contents:
                         print(f"[-] No EMGDATA in {file_name}")
                         continue
-                        
+
                     raw_data = mat_contents['EMGDATA']
                     num_channels, num_samples = raw_data.shape
                     time_axis = np.arange(num_samples) / FS
-                    
-                    # Generate image for each channel
+
                     for c in range(num_channels):
                         raw_signal = raw_data[c, :]
-                        _generate_channel_image(raw_signal, p, m, c, save_path, time_axis)
-                        
+                        _generate_channel_image(raw_signal, selection.participant, selection.movement, c, save_path, time_axis)
+
                 except Exception as e:
-                    print(f"[!] Error processing Participant {p}, Movement {m}: {e}")
+                    print(f"[!] Error processing Participant {selection.participant}, Movement {selection.movement}: {e}")
+        else:
+            for p in range(1, 9):
+                for m in range(1, 10):
+                    file_name = os.path.join(base_data_path, f'Soggetto{p}', f'Movimento{m}_labelled.mat')
+
+                    if not os.path.exists(file_name):
+                        print(f"[-] Skipping missing file: {file_name}")
+                        continue
+
+                    try:
+                        mat_contents = scipy.io.loadmat(file_name)
+                        if 'EMGDATA' not in mat_contents:
+                            print(f"[-] No EMGDATA in {file_name}")
+                            continue
+
+                        raw_data = mat_contents['EMGDATA']
+                        num_channels, num_samples = raw_data.shape
+                        time_axis = np.arange(num_samples) / FS
+
+                        for c in range(num_channels):
+                            raw_signal = raw_data[c, :]
+                            _generate_channel_image(raw_signal, p, m, c, save_path, time_axis)
+
+                    except Exception as e:
+                        print(f"[!] Error processing Participant {p}, Movement {m}: {e}")
     
     elif data_structure == 'collected':
         # Collected: Flat PM{x} structure, variable participants × 9 movements
-        available_participants = _discover_collected_participants(base_data_path)
+        if repository is None:
+            repository = DataRepository()
+
+        available_participants = repository.discover_participants('collected')
+
         participants = _normalise_participant_ids(participant_ids)
 
         if participants is None:
@@ -219,31 +232,29 @@ def generate_all_signal_images(base_data_path=None, save_path=None, data_structu
             print("Batch generation complete! All images saved.")
             return
 
-        for p in participants:
-            for m in range(1, 10):
-                file_name = os.path.join(base_data_path, f'P{p}M{m}_labelled.mat')
-                
-                if not os.path.exists(file_name):
-                    skipped_trials.append((p, m, 'missing file'))
+        for selection in repository.iter_file_selections('collected', participants):
+            file_name = repository.output_file_path(selection, create_dirs=False)
+
+            if not os.path.exists(file_name):
+                skipped_trials.append((selection.participant, selection.movement, 'missing file'))
+                continue
+
+            try:
+                mat_contents = scipy.io.loadmat(file_name)
+                if 'EMGDATA' not in mat_contents:
+                    skipped_trials.append((selection.participant, selection.movement, 'missing EMGDATA'))
                     continue
-                    
-                try:
-                    mat_contents = scipy.io.loadmat(file_name)
-                    if 'EMGDATA' not in mat_contents:
-                        skipped_trials.append((p, m, 'missing EMGDATA'))
-                        continue
-                        
-                    raw_data = mat_contents['EMGDATA']
-                    num_channels, num_samples = raw_data.shape
-                    time_axis = np.arange(num_samples) / FS
-                    
-                    # Generate image for each channel
-                    for c in range(num_channels):
-                        raw_signal = raw_data[c, :]
-                        _generate_channel_image(raw_signal, p, m, c, save_path, time_axis)
-                        
-                except Exception as e:
-                    skipped_trials.append((p, m, f'corrupted or unreadable ({e})'))
+
+                raw_data = mat_contents['EMGDATA']
+                num_channels, num_samples = raw_data.shape
+                time_axis = np.arange(num_samples) / FS
+
+                for c in range(num_channels):
+                    raw_signal = raw_data[c, :]
+                    _generate_channel_image(raw_signal, selection.participant, selection.movement, c, save_path, time_axis)
+
+            except Exception as e:
+                skipped_trials.append((selection.participant, selection.movement, f'corrupted or unreadable ({e})'))
 
         if skipped_trials:
             print("\n[SKIP LOG] Collected trials skipped:")

@@ -234,7 +234,7 @@ def run_ensemble_validation(model_path, base_path='./secondary_data'):
         target_vec = Config.TARGET_MAPPING[m]
         
         for p in range(1, 9):
-            if hasattr(Config, 'CORRUPTED_TRIALS') and (p, m) in Config.CORRUPTED_TRIALS:
+            if hasattr(Config, 'SECONDARY_BLACKLIST') and (p, m) in Config.SECONDARY_BLACKLIST:
                 continue
                 
             file_path = os.path.join(base_path, f'Soggetto{p}', f'Movimento{m}_labelled.mat')

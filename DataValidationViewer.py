@@ -139,7 +139,7 @@ def extract_representative_burst(p, m):
     """Hunts down the first TWO bursts of a specific trial, including the rest period between them."""
     file_path = os.path.join(Config.BASE_DATA_PATH, f'Soggetto{p}', f'Movimento{m}.mat')
     if not os.path.exists(file_path): return None
-    if (p, m) in Config.CORRUPTED_TRIALS: return None
+    if (p, m) in Config.SECONDARY_BLACKLIST: return None
     
     mat = scipy.io.loadmat(file_path)
     raw_data = mat['EMGDATA']

@@ -141,7 +141,7 @@ MOVEMENT_NAMES = {
     9: "Rest"
 }
 
-CORRUPTED_TRIALS = [
+SECONDARY_BLACKLIST = [
     (1, 1),  # P1, M1: Defective Pectoralis Major (Sternal)
     (5, 1),  # P5, M1: Defective Trapezius Ascendant
     (7, 1),  # P7, M1: Defective Latissimus Dorsi
@@ -159,8 +159,12 @@ CORRUPTED_TRIALS = [
     (7, 8),  # P7, M8: FATAL - Flatline Trapezius Ascendant
 ]
 
+COLLECTED_BLACKLIST = [
+    (6, 1),     # Completely Corrupted
+]
+
 # New CORRUPTED TRIALS identified during validation (added 2024-06-15, much worse than before)
-# CORRUPTED_TRIALS = [
+# SECONDARY_BLACKLIST = [
 #     (1, 1),  # P1, M1: Defective Pectoralis Major (Sternal)
 #     (5, 1),  # P5, M1: Defective Trapezius Ascendant
 #     (7, 1),  # P7, M1: Defective Latissimus Dorsi

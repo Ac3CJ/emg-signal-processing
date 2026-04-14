@@ -376,7 +376,7 @@ def load_and_prepare_dataset(
 		participant_minmax = None
 		
 		for m in range(1, 10):
-			if hasattr(Config, 'CORRUPTED_TRIALS') and (p, m) in Config.CORRUPTED_TRIALS:
+			if hasattr(Config, 'SECONDARY_BLACKLIST') and (p, m) in Config.SECONDARY_BLACKLIST:
 				continue
 			
 			# Try to load pre-labelled windows from the labelled directory

@@ -87,6 +87,48 @@ def _resolve_training_noise_magnitudes():
 	return magnitudes
 
 
+def _resolve_contraction_block_shuffle_seed():
+	"""Returns optional deterministic seed for contraction-block shuffling."""
+	raw_seed = getattr(Config, "CONTRACTION_BLOCK_SHUFFLE_SEED", None)
+	if raw_seed is None:
+		return None
+
+	try:
+		return int(raw_seed)
+	except (TypeError, ValueError):
+		return None
+
+
+def _resolve_segment_block_shuffle_enabled(explicit_flag, default_condition):
+	"""Resolves whether contraction-window block shuffling should run."""
+	if explicit_flag is not None:
+		return bool(explicit_flag)
+
+	config_enabled = bool(getattr(Config, "CONTRACTION_BLOCK_SHUFFLE", True))
+	return config_enabled and bool(default_condition)
+
+
+def _shuffle_list_in_place(items, rng):
+	"""Shuffles a list in place using a numpy RNG."""
+	if rng is None or len(items) <= 1:
+		return
+
+	order = rng.permutation(len(items))
+	items[:] = [items[idx] for idx in order]
+
+
+def _shuffle_paired_lists_in_place(first, second, rng):
+	"""Shuffles two same-length lists in lockstep."""
+	if rng is None or len(first) <= 1:
+		return
+	if len(first) != len(second):
+		raise ValueError("Cannot shuffle paired lists with mismatched lengths.")
+
+	order = rng.permutation(len(first))
+	first[:] = [first[idx] for idx in order]
+	second[:] = [second[idx] for idx in order]
+
+
 def _generate_raw_training_variants(raw_data, include_noise_aug=True, exclude_windows=None):
 	"""
 	Builds raw-data variants for augmentation.
@@ -327,6 +369,7 @@ def load_and_prepare_dataset(
 	labelled_base_path=None,
 	include_noise_aug=True,
 	return_continuous=False,
+	shuffle_segment_blocks=None,
 ):
 	"""
 	Load and prepare dataset using pre-labelled contraction windows when available.
@@ -338,6 +381,8 @@ def load_and_prepare_dataset(
 		labelled_base_path (str): Path to edited/labelled data directory. If None, infers from base_path.
 		include_noise_aug (bool): If True, adds configured noisy raw variants before filtering.
 		return_continuous (bool): If True, returns continuous arrays instead of pre-windowed tensors.
+		shuffle_segment_blocks (bool | None): Optional override for contraction-window
+			block shuffling. If None, config/default behavior is used.
 	
 	Returns:
 		tuple: (X_data, y_targets) - preprocessed data
@@ -355,6 +400,14 @@ def load_and_prepare_dataset(
 	repository = DataRepository.from_standard_path(labelled_base_path)
 	if repository is None:
 		repository = DataRepository.from_standard_path(base_path)
+
+	should_shuffle_segment_blocks = _resolve_segment_block_shuffle_enabled(
+		shuffle_segment_blocks,
+		default_condition=include_noise_aug,
+	)
+	block_shuffle_rng = None
+	if should_shuffle_segment_blocks:
+		block_shuffle_rng = np.random.default_rng(_resolve_contraction_block_shuffle_seed())
 	
 	all_active_bursts = []
 	all_active_targets = []
@@ -369,6 +422,10 @@ def load_and_prepare_dataset(
 		print(f"Noise augmentation BEFORE filtering enabled: {_resolve_training_noise_magnitudes()}")
 	else:
 		print("Noise augmentation BEFORE filtering disabled")
+	if should_shuffle_segment_blocks:
+		print("Contraction-window block shuffling enabled")
+	else:
+		print("Contraction-window block shuffling disabled")
 	print("NOTE: Global normalization computed per participant across all movements.\n")
 
 	# Process each participant separately using participant-level robust min/max.
@@ -494,17 +551,27 @@ def load_and_prepare_dataset(
 			alpha=Config.MIXUP_ALPHA, mixup_ratio=Config.MIXUP_RATIO
 		)
 
+	active_bursts_for_processing = list(all_active_bursts)
+	active_targets_for_processing = list(all_active_targets)
+	rest_valleys_for_processing = list(all_rest_valleys)
+
+	if should_shuffle_segment_blocks:
+		_shuffle_paired_lists_in_place(active_bursts_for_processing, active_targets_for_processing, block_shuffle_rng)
+		_shuffle_list_in_place(rest_valleys_for_processing, block_shuffle_rng)
+
 	if return_continuous:
-		continuous_segments = []
-		continuous_targets = []
+		segment_pairs = []
+		for burst, target in zip(active_bursts_for_processing, active_targets_for_processing):
+			segment_pairs.append((np.asarray(burst, dtype=np.float32), np.asarray(target, dtype=np.float32)))
 
-		for burst, target in zip(all_active_bursts, all_active_targets):
-			continuous_segments.append(np.asarray(burst, dtype=np.float32))
-			continuous_targets.append(np.asarray(target, dtype=np.float32))
+		for valley in rest_valleys_for_processing:
+			segment_pairs.append((np.asarray(valley, dtype=np.float32), REST_VECTOR))
 
-		for valley in all_rest_valleys:
-			continuous_segments.append(np.asarray(valley, dtype=np.float32))
-			continuous_targets.append(REST_VECTOR)
+		if should_shuffle_segment_blocks:
+			_shuffle_list_in_place(segment_pairs, block_shuffle_rng)
+
+		continuous_segments = [segment for segment, _ in segment_pairs]
+		continuous_targets = [target for _, target in segment_pairs]
 
 		X_data, y_targets = concat_continuous_segments(continuous_segments, continuous_targets)
 		if X_data is None:
@@ -520,7 +587,7 @@ def load_and_prepare_dataset(
 
 	# 3. Slice Active bursts into 500ms windows and apply Magnitude Warping
 	print("Slicing Active arrays and applying Magnitude Warping...")
-	for burst, target in zip(all_active_bursts, all_active_targets):
+	for burst, target in zip(active_bursts_for_processing, active_targets_for_processing):
 		windows = slice_into_windows(burst, Config.INCREMENT, Config.WINDOW_SIZE)
 		for w in windows:
 			X_data.append(w)
@@ -536,7 +603,7 @@ def load_and_prepare_dataset(
 	rest_windows_unaugmented = []
 	rest_targets_unaugmented = []
 
-	for valley in all_rest_valleys:
+	for valley in rest_valleys_for_processing:
 		windows = slice_into_windows(valley, Config.INCREMENT, Config.WINDOW_SIZE)
 		for w in windows:
 			rest_windows_unaugmented.append(w)
@@ -579,6 +646,7 @@ def load_collected_data(
 	include_noise_aug=True,
 	include_participants=None,
 	return_continuous=False,
+	shuffle_segment_blocks=None,
 ):
 	"""
 	Load and preprocess collected .mat files using pre-labelled windows when available.
@@ -591,6 +659,8 @@ def load_collected_data(
 		include_participants (list[int] | None): Optional participant IDs to include.
 			Only files matching P#M#.mat for selected participants are loaded.
 		return_continuous (bool): If True, returns continuous arrays instead of pre-windowed tensors.
+		shuffle_segment_blocks (bool | None): Optional override for contraction-window
+			block shuffling. If None, config/default behavior is used.
 	
 	Returns:
 		tuple: (X_data, y_data) or (None, None) if no files found
@@ -601,6 +671,13 @@ def load_collected_data(
 
 	repository = DataRepository.from_standard_path(folder_path)
 	use_repository_paths = repository is not None and os.path.normpath(folder_path) == os.path.normpath(repository.raw_root("collected"))
+	should_shuffle_segment_blocks = _resolve_segment_block_shuffle_enabled(
+		shuffle_segment_blocks,
+		default_condition=augment,
+	)
+	block_shuffle_rng = None
+	if should_shuffle_segment_blocks:
+		block_shuffle_rng = np.random.default_rng(_resolve_contraction_block_shuffle_seed())
 	
 	# Infer labelled folder path
 	if labelled_folder_path is None:
@@ -674,22 +751,29 @@ def load_collected_data(
 		print(f"[Collected Data] Noise augmentation BEFORE filtering enabled: {_resolve_training_noise_magnitudes()}")
 	else:
 		print("[Collected Data] Noise augmentation BEFORE filtering disabled")
+	if should_shuffle_segment_blocks:
+		print("[Collected Data] Contraction-window block shuffling enabled")
+	else:
+		print("[Collected Data] Contraction-window block shuffling disabled")
 
 	REST_VECTOR = np.array(Config.TARGET_MAPPING[9], dtype=np.float32)
 	
 	X_data = []
 	y_data = []
 	
-	for participant_or_none, entry in selection_entries:
+	for entry in selection_entries:
 		if use_repository_paths:
-			selection = entry
+			selection = entry if isinstance(entry, FileSelection) else entry[1]
 			participant = int(selection.participant)
 			movement = int(selection.movement)
 			file_path = repository.raw_file_path(selection)
 			mat_file = f'P{participant}M{movement}.mat'
 			labelled_file = repository.output_file_path(selection, create_dirs=False)
 		else:
-			mat_file = entry
+			if isinstance(entry, tuple):
+				mat_file = entry[1]
+			else:
+				mat_file = entry
 			file_path = os.path.join(folder_path, mat_file)
 			labelled_file = os.path.join(labelled_folder_path, mat_file.replace('.mat', '_labelled.mat'))
 		
@@ -794,6 +878,9 @@ def load_collected_data(
 						segments = [processed_data]
 						segment_targets = [target_vector]
 
+					if should_shuffle_segment_blocks and len(segments) > 1:
+						_shuffle_paired_lists_in_place(segments, segment_targets, block_shuffle_rng)
+
 					variant_units_total += len(segments)
 					if len(segments) == 0:
 						continue
@@ -819,6 +906,9 @@ def load_collected_data(
 
 								# Use bursts + valleys for windowing
 								all_contraction_data = bursts + valleys
+								if should_shuffle_segment_blocks:
+									all_contraction_data = list(all_contraction_data)
+									_shuffle_list_in_place(all_contraction_data, block_shuffle_rng)
 								for data in all_contraction_data:
 									windows.extend(slice_into_windows(data, Config.INCREMENT, Config.WINDOW_SIZE))
 							else:
@@ -872,6 +962,9 @@ def load_collected_data(
 		return None, None
 
 	if return_continuous:
+		if should_shuffle_segment_blocks:
+			_shuffle_paired_lists_in_place(X_data, y_data, block_shuffle_rng)
+
 		continuous_X, continuous_y = concat_continuous_segments(X_data, y_data)
 		if continuous_X is None:
 			print(f"[Collected Data] No valid continuous data extracted from {folder_path}")

@@ -18,6 +18,8 @@ if hasattr(torch.backends, 'xpu'):
 class ContinuousEMGDataset(Dataset):
     """
     Memory-efficient dataset that slices sliding windows on-the-fly from continuous EMG arrays.
+    Windows are generated within contiguous target segments, so no window crosses
+    a segment/class boundary.
 
     Args:
         continuous_X (np.ndarray): Shape (num_channels, total_samples).
@@ -76,8 +78,57 @@ class ContinuousEMGDataset(Dataset):
         self.active_channels = channel_indices
         self.total_samples = total_samples
 
-        # Number of valid sliding windows without precomputing any window tensor.
-        self.num_windows = ((self.total_samples - self.window_size) // self.step_size) + 1
+        self.segment_bounds = self._compute_target_run_bounds(self.continuous_y)
+        self.window_starts, self.segment_window_spans = self._build_window_starts(
+            self.segment_bounds,
+            self.window_size,
+            self.step_size,
+        )
+        self.num_windows = int(self.window_starts.shape[0])
+
+    @staticmethod
+    def _compute_target_run_bounds(sample_targets, atol=1e-6):
+        """Returns [(start, end), ...] runs of contiguous equal targets."""
+        if sample_targets.shape[0] == 0:
+            return []
+
+        bounds = []
+        run_start = 0
+        for idx in range(1, sample_targets.shape[0]):
+            if not np.allclose(sample_targets[idx], sample_targets[idx - 1], atol=atol):
+                bounds.append((run_start, idx))
+                run_start = idx
+        bounds.append((run_start, sample_targets.shape[0]))
+        return bounds
+
+    @staticmethod
+    def _build_window_starts(segment_bounds, window_size, step_size):
+        """Builds valid window starts and per-segment span indices."""
+        starts = []
+        segment_window_spans = []
+        running_count = 0
+
+        for start_idx, end_idx in segment_bounds:
+            segment_len = int(end_idx - start_idx)
+            segment_starts = []
+
+            if segment_len >= window_size:
+                last_start = int(end_idx - window_size)
+                segment_starts = list(range(int(start_idx), last_start + 1, int(step_size)))
+
+            starts.extend(segment_starts)
+            segment_window_spans.append((running_count, running_count + len(segment_starts)))
+            running_count += len(segment_starts)
+
+        return np.asarray(starts, dtype=np.int64), segment_window_spans
+
+    def get_segment_window_spans(self):
+        """Returns per-segment [start, end) spans in window-index space."""
+        return [
+            (int(start_idx), int(end_idx))
+            for start_idx, end_idx in self.segment_window_spans
+            if int(end_idx) > int(start_idx)
+        ]
 
     def __len__(self):
         return self.num_windows
@@ -91,7 +142,7 @@ class ContinuousEMGDataset(Dataset):
         if index < 0 or index >= self.num_windows:
             raise IndexError(f"Index {index} out of range for dataset of size {self.num_windows}")
 
-        start_idx = index * self.step_size
+        start_idx = int(self.window_starts[index])
         end_idx = start_idx + self.window_size
 
         # Output feature shape remains (Channels, Length) for Conv1d.

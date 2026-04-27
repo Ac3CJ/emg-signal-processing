@@ -25,6 +25,11 @@ ON_THE_FLY_WINDOW_SIZE = WINDOW_SIZE
 ON_THE_FLY_STEP_SIZE = INCREMENT
 ON_THE_FLY_ACTIVE_CHANNELS = None  # Example: [0, 1, 2, 3]
 
+# Shuffle order of full contraction/rest segments while preserving each segment's
+# internal temporal order. Seed=None keeps stochastic reshuffling every epoch.
+CONTRACTION_BLOCK_SHUFFLE = True
+CONTRACTION_BLOCK_SHUFFLE_SEED = None
+
 # ====================================================================================
 # 2b. VISUALIZATION SETTINGS
 # ====================================================================================

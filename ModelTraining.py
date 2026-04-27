@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset, Dataset
+from torch.utils.data import DataLoader, TensorDataset, Dataset, Sampler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import numpy as np
 import matplotlib.pyplot as plt
@@ -116,16 +116,105 @@ def _is_continuous_emg_layout(X_data, y_data):
     return True
 
 
-def _build_data_loader(dataset, batch_size, shuffle, num_workers=None):
+def _resolve_contraction_block_shuffle_seed():
+    """Parses optional deterministic seed for contraction-block shuffling."""
+    raw_seed = getattr(Config, "CONTRACTION_BLOCK_SHUFFLE_SEED", None)
+    if raw_seed is None:
+        return None
+
+    try:
+        return int(raw_seed)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_contraction_block_shuffle_enabled():
+    """Returns whether contraction-window block shuffling is enabled."""
+    return bool(getattr(Config, "CONTRACTION_BLOCK_SHUFFLE", True))
+
+
+def _contiguous_target_runs(y_arr, atol=1e-6):
+    """Returns contiguous [start, end) runs for equal sample targets."""
+    if y_arr.ndim != 2 or y_arr.shape[0] == 0:
+        return []
+
+    runs = []
+    run_start = 0
+    for idx in range(1, y_arr.shape[0]):
+        if not np.allclose(y_arr[idx], y_arr[idx - 1], atol=atol):
+            runs.append((run_start, idx))
+            run_start = idx
+    runs.append((run_start, y_arr.shape[0]))
+    return runs
+
+
+def _continuous_window_end_indices(y_arr, window_size, step_size):
+    """Returns end indices of windows that remain inside contiguous target runs."""
+    if y_arr.ndim != 2 or y_arr.shape[0] < window_size:
+        return np.zeros((0,), dtype=np.int64)
+
+    end_indices = []
+    for run_start, run_end in _contiguous_target_runs(y_arr):
+        run_len = int(run_end - run_start)
+        if run_len < window_size:
+            continue
+
+        first_end = int(run_start + window_size - 1)
+        last_end = int(run_end - 1)
+        end_indices.extend(range(first_end, last_end + 1, int(step_size)))
+
+    if len(end_indices) == 0:
+        return np.zeros((0,), dtype=np.int64)
+    return np.asarray(end_indices, dtype=np.int64)
+
+
+class ContractionBlockSampler(Sampler):
+    """Shuffles segment order each epoch while preserving intra-segment window order."""
+
+    def __init__(self, segment_window_spans, seed=None):
+        self.segment_window_spans = [
+            (int(start_idx), int(end_idx))
+            for start_idx, end_idx in segment_window_spans
+            if int(end_idx) > int(start_idx)
+        ]
+        self.seed = None if seed is None else int(seed)
+        self._epoch = 0
+        self._length = int(sum(end_idx - start_idx for start_idx, end_idx in self.segment_window_spans))
+
+    def __iter__(self):
+        if self._length == 0:
+            return iter(())
+
+        rng_seed = None if self.seed is None else self.seed + self._epoch
+        rng = np.random.default_rng(rng_seed)
+        order = rng.permutation(len(self.segment_window_spans))
+        self._epoch += 1
+
+        ordered_spans = [self.segment_window_spans[int(idx)] for idx in order]
+        return (
+            window_idx
+            for start_idx, end_idx in ordered_spans
+            for window_idx in range(start_idx, end_idx)
+        )
+
+    def __len__(self):
+        return self._length
+
+
+def _build_data_loader(dataset, batch_size, shuffle, num_workers=None, sampler=None):
     """Builds DataLoader with worker settings that work for both 0 and >0 workers."""
     resolved_workers = Config.NUM_DATA_WORKERS if num_workers is None else max(0, int(num_workers))
 
     loader_kwargs = {
         "batch_size": batch_size,
-        "shuffle": shuffle,
         "num_workers": resolved_workers,
         "pin_memory": True,
     }
+
+    if sampler is not None:
+        loader_kwargs["sampler"] = sampler
+    else:
+        loader_kwargs["shuffle"] = shuffle
 
     if resolved_workers > 0:
         loader_kwargs["persistent_workers"] = True
@@ -224,7 +313,20 @@ def train_model(
         # Windows spawns worker processes; each process loading Torch/XPU DLLs can exhaust resources.
         loader_workers = 0
 
-    train_loader = _build_data_loader(train_dataset, batch_size=batch_size, shuffle=False, num_workers=loader_workers)
+    train_sampler = None
+    if using_on_the_fly and _is_contraction_block_shuffle_enabled():
+        train_sampler = ContractionBlockSampler(
+            segment_window_spans=train_dataset.get_segment_window_spans(),
+            seed=_resolve_contraction_block_shuffle_seed(),
+        )
+
+    train_loader = _build_data_loader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=loader_workers,
+        sampler=train_sampler,
+    )
     val_loader = _build_data_loader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=loader_workers)
 
     device, device_type = _resolve_training_device()
@@ -238,6 +340,8 @@ def train_model(
         print(f"Window size: {resolved_window_size} | Step size: {resolved_step_size}")
     print(f"Batch size: {batch_size} | Gradient Accumulation: {Config.GRADIENT_ACCUMULATION_STEPS}")
     print(f"Data workers: {loader_workers} | Prefetch: {Config.PREFETCH_FACTOR if loader_workers > 0 else 'N/A'}")
+    if using_on_the_fly:
+        print(f"Contraction-block shuffling: {'enabled' if train_sampler is not None else 'disabled'}")
     print(f"Effective batch size: {batch_size * Config.GRADIENT_ACCUMULATION_STEPS}")
 
     model = NNModels.ShoulderRCNN(num_channels=model_num_channels, num_outputs=model_num_outputs).to(device)
@@ -450,7 +554,23 @@ def train_transfer_learning(X_train, y_train, X_val, y_val, pretrained_model_pat
         # Windows spawns worker processes; each process loading Torch/XPU DLLs can exhaust resources.
         loader_workers = 0
 
-    train_loader = _build_data_loader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=loader_workers)
+    train_sampler = None
+    train_shuffle = True
+    if using_on_the_fly:
+        train_shuffle = False
+        if _is_contraction_block_shuffle_enabled():
+            train_sampler = ContractionBlockSampler(
+                segment_window_spans=train_dataset.get_segment_window_spans(),
+                seed=_resolve_contraction_block_shuffle_seed(),
+            )
+
+    train_loader = _build_data_loader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=train_shuffle,
+        num_workers=loader_workers,
+        sampler=train_sampler,
+    )
     val_loader = _build_data_loader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=loader_workers)
     
     device, device_type = _resolve_training_device()
@@ -465,6 +585,8 @@ def train_transfer_learning(X_train, y_train, X_val, y_val, pretrained_model_pat
         print(f"Window size: {resolved_window_size} | Step size: {resolved_step_size}")
     print(f"Batch size: {batch_size} | Epochs: {epochs} | Patience: {patience}")
     print(f"Data workers: {loader_workers} | Prefetch: {Config.PREFETCH_FACTOR if loader_workers > 0 else 'N/A'}")
+    if using_on_the_fly:
+        print(f"Contraction-block shuffling: {'enabled' if train_sampler is not None else 'disabled'}")
     print(f"Learning rate: {Config.TRANSFER_LEARNING_LEARNING_RATE}")
     
     # Load pretrained model
@@ -704,10 +826,8 @@ def _count_samples(X_data, y_data=None):
     if y_data is not None and _is_continuous_emg_layout(X_data, y_data):
         window_size = int(getattr(Config, "ON_THE_FLY_WINDOW_SIZE", Config.WINDOW_SIZE))
         step_size = int(getattr(Config, "ON_THE_FLY_STEP_SIZE", Config.INCREMENT))
-        total_samples = int(X_data.shape[1])
-        if total_samples < window_size:
-            return 0
-        return ((total_samples - window_size) // step_size) + 1
+        y_arr = np.asarray(y_data, dtype=np.float32)
+        return int(_continuous_window_end_indices(y_arr, window_size, step_size).shape[0])
 
     return int(len(X_data))
 
@@ -719,9 +839,8 @@ def _extract_window_end_labels(y_data, window_size, step_size):
         num_outputs = y_arr.shape[1] if y_arr.ndim == 2 else Config.NUM_OUTPUTS
         return np.zeros((0, num_outputs), dtype=np.float32)
 
-    end_indices = np.arange(window_size - 1, y_arr.shape[0], step_size, dtype=np.int64)
+    end_indices = _continuous_window_end_indices(y_arr, int(window_size), int(step_size))
     return y_arr[end_indices]
-
 
 def _concat_dataset_parts(dataset_parts):
     """Concatenates non-empty dataset tuples [(X, y), ...]."""
@@ -788,17 +907,347 @@ def _print_dataset_distribution(y_train, y_val, title="DATASET DISTRIBUTION", co
     print(f"{'TOTAL':<18} | {total_train:<8} | {total_val:<8}\n")
 
 # ====================================================================================
-# ============================== DEBUG/DUMMY TEST ====================================
+# ============================== TRAINING PIPELINES ==================================
 # ====================================================================================
 
-if __name__ == "__main__":
+def _resolve_collected_participants_for_main_modes(args, selected_collected_for_main_modes, collected_raw_path):
+    """Validates and resolves collected participant selection for loso/standard modes."""
+    include_collected_main_modes = args.include_collected or (
+        selected_collected_for_main_modes is not None and len(selected_collected_for_main_modes) > 0
+    )
+
+    if include_collected_main_modes and args.mode in ('loso', 'standard'):
+        available_collected = REPOSITORY.discover_participants('collected')
+        if len(available_collected) == 0:
+            print(f"\nERROR: --include_collected requested but no collected files were found at {collected_raw_path}")
+            exit(1)
+
+        if selected_collected_for_main_modes is None:
+            selected_collected_for_main_modes = available_collected
+        elif len(selected_collected_for_main_modes) > 0:
+            # Only validate if non-empty list was explicitly provided
+            missing_participants = sorted(set(selected_collected_for_main_modes) - set(available_collected))
+            if missing_participants:
+                print(f"\nERROR: Requested collected participants not found: {missing_participants}")
+                print(f"Available collected participants: {available_collected}")
+                exit(1)
+
+        if len(selected_collected_for_main_modes) > 0:
+            print("\n[Collected Integration] Enabled for main training mode.")
+            print(f"  - Included collected participants: {selected_collected_for_main_modes}")
+        else:
+            print("\n[Control Case] No collected participants selected (empty list).")
+        return selected_collected_for_main_modes
+
+    if selected_collected_for_main_modes is not None and args.mode == 'transfer':
+        print("\n[Info] --collected_participants is ignored in transfer mode.")
+        print("[Info] Use --collected_train_participants for transfer participant splits.")
+        return []
+
+    if selected_collected_for_main_modes is None:
+        return []
+    return selected_collected_for_main_modes
+
+
+def loso_pipeline(
+    selected_collected_for_main_modes,
+    collected_raw_path,
+    collected_edited_path,
+    on_the_fly_enabled,
+    on_the_fly_window_size,
+    on_the_fly_step_size,
+    selected_active_channels,
+):
+    """Implements the Leave-One-Subject-Out training pipeline."""
+    print("Loading dataset with Leave-One-Subject-Out Validation...")
+
+    secondary_subjects = REPOSITORY.discover_participants('secondary')
+    if len(secondary_subjects) == 0:
+        secondary_subjects = list(range(1, 9))
+        print("[WARNING] Could not auto-discover secondary subjects. Falling back to [1..8].")
+
+    if len(secondary_subjects) < 2:
+        print("ERROR: LOSO requires at least 2 secondary participants.")
+        exit(1)
+
+    # Keep original LOSO behavior: train on all-but-last subject, validate on last subject.
+    train_secondary_subjects = secondary_subjects[:-1]
+    val_secondary_subject = secondary_subjects[-1]
+
+    print(f"\n[LOSO] Training secondary subjects: {train_secondary_subjects}")
+    print(f"[LOSO] Validation secondary subject: {val_secondary_subject}")
+    if len(selected_collected_for_main_modes) > 0:
+        print(f"[LOSO] Appending collected participants to TRAINING only: {selected_collected_for_main_modes}")
+
+    X_train_secondary, y_train_secondary = DataPreparation.load_and_prepare_dataset(
+        base_path=Config.SECONDARY_DATA_PATH,
+        include_subjects=train_secondary_subjects,
+        include_noise_aug=True,
+        return_continuous=on_the_fly_enabled,
+    )
+
+    train_parts = [(X_train_secondary, y_train_secondary)]
+    if len(selected_collected_for_main_modes) > 0:
+        X_train_collected, y_train_collected = DataPreparation.load_collected_data(
+            folder_path=collected_raw_path,
+            labelled_folder_path=collected_edited_path,
+            augment=True,
+            include_noise_aug=True,
+            include_participants=selected_collected_for_main_modes,
+            return_continuous=on_the_fly_enabled,
+        )
+        train_parts.append((X_train_collected, y_train_collected))
+
+    X_train, y_train = _concat_dataset_parts(train_parts)
+
+    print(f"\n[LOSO] Loading secondary VALIDATION data from Subject {val_secondary_subject}...")
+    X_val, y_val = DataPreparation.load_and_prepare_dataset(
+        base_path=Config.SECONDARY_DATA_PATH,
+        include_subjects=[val_secondary_subject],
+        include_noise_aug=False,
+        return_continuous=on_the_fly_enabled,
+    )
+
+    if X_train is None or X_val is None or _count_samples(X_train, y_train) == 0 or _count_samples(X_val, y_val) == 0:
+        print("ERROR: No data loaded. Check your file paths and labels.")
+        exit(1)
+
+    _print_dataset_distribution(
+        y_train,
+        y_val,
+        title="LOSO DATASET DISTRIBUTION",
+        continuous=on_the_fly_enabled,
+        window_size=on_the_fly_window_size,
+        step_size=on_the_fly_step_size,
+    )
+    print(f"Training on {_count_samples(X_train, y_train)} samples, Validating on {_count_samples(X_val, y_val)} samples...")
+
+    train_model(
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        epochs=Config.EPOCHS,
+        batch_size=Config.BATCH_SIZE,
+        patience=Config.PATIENCE,
+        use_on_the_fly=on_the_fly_enabled,
+        window_size=on_the_fly_window_size,
+        step_size=on_the_fly_step_size,
+        active_channels=selected_active_channels,
+    )
+
+
+def transfer_pipeline(
+    args,
+    on_the_fly_enabled,
+    on_the_fly_window_size,
+    on_the_fly_step_size,
+    selected_active_channels,
+):
+    """Implements the transfer learning training pipeline."""
+    print("Starting Transfer Learning Training...")
+    print(f"Pretrained model: {args.pretrained}")
+    print(f"Freeze backbone: {args.freeze}")
+
+    try:
+        selected_train_participants = _parse_participant_list(args.collected_train_participants)
+    except ValueError as exc:
+        print(f"\n✗ ERROR: {exc}")
+        exit(1)
+
+    # Optional collected participant selection for TRAINING only.
+    if selected_train_participants is not None and len(selected_train_participants) > 0:
+        collected_raw_path = REPOSITORY.raw_root('collected')
+        collected_edited_path = REPOSITORY.edited_root('collected')
+
+        available_participants = REPOSITORY.discover_participants('collected')
+        if len(available_participants) == 0:
+            print(f"\n✗ ERROR: No collected files were found at {collected_raw_path}")
+            exit(1)
+
+        missing_participants = sorted(set(selected_train_participants) - set(available_participants))
+        if missing_participants:
+            print(
+                f"\n✗ ERROR: Requested training participants not found in collected data: {missing_participants}"
+            )
+            print(f"Available collected participants: {available_participants}")
+            exit(1)
+
+        print("\n[Transfer Learning] Using selected collected participants for TRAINING:")
+        print(f"  - Train participants: {selected_train_participants}")
+        print("  - Unlisted collected participants are excluded from training validation")
+        print(f"  - Raw source: {collected_raw_path}")
+
+        print("\n[Transfer Learning] Loading collected TRAINING data from selected participants...")
+        X_train, y_train = DataPreparation.load_collected_data(
+            folder_path=collected_raw_path,
+            labelled_folder_path=collected_edited_path,
+            augment=True,
+            include_noise_aug=True,
+            include_participants=selected_train_participants,
+            return_continuous=on_the_fly_enabled,
+        )
+        X_val_collected, y_val_collected = None, None
+    else:
+        # Control case: empty list provided, use SECONDARY DATA ONLY (no collected data)
+        print("\n[Control Case] Empty collected participant list provided.")
+        print("[Transfer Learning] Using SECONDARY DATA for both TRAINING and VALIDATION (control case)...")
+        X_train, y_train = DataPreparation.load_and_prepare_dataset(
+            base_path=Config.SECONDARY_DATA_PATH,
+            include_subjects=[1, 2, 3, 4, 5, 6, 7],  # All but subject 8
+            include_noise_aug=True,
+            return_continuous=on_the_fly_enabled,
+        )
+        X_val_collected, y_val_collected = None, None
+
+    if X_train is None or _count_samples(X_train, y_train) == 0:
+        print("\n✗ ERROR: No training data available.")
+        print(f"Selected train participants: {selected_train_participants}")
+        exit(1)
+
+    # 3. Always load secondary data validation (from subject 8 LOSO fold)
+    print("\n[Transfer Learning] Loading VALIDATION data from secondary_data (Subject 8)...")
+    X_val_secondary, y_val_secondary = DataPreparation.load_and_prepare_dataset(
+        base_path=Config.SECONDARY_DATA_PATH,
+        include_subjects=[8],
+        include_noise_aug=False,
+        return_continuous=on_the_fly_enabled,
+    )
+
+    if X_val_secondary is None or _count_samples(X_val_secondary, y_val_secondary) == 0:
+        print("✗ ERROR: Could not load secondary validation data!")
+        exit(1)
+
+    # 4. Combine validation datasets
+    if X_val_collected is not None and _count_samples(X_val_collected, y_val_collected) > 0:
+        print(f"\n[Transfer Learning] Combining validation sets:")
+        print(f"  - Collected: {_count_samples(X_val_collected, y_val_collected)} samples")
+        print(f"  - Secondary: {_count_samples(X_val_secondary, y_val_secondary)} samples")
+        X_val, y_val = _concat_dataset_parts([
+            (X_val_secondary, y_val_secondary),
+            (X_val_collected, y_val_collected),
+        ])
+        print(f"  - Total: {_count_samples(X_val, y_val)} samples")
+    else:
+        print(f"\n[Transfer Learning] No collected validation data found. Using only secondary data validation.")
+        print(f"  - Secondary: {_count_samples(X_val_secondary, y_val_secondary)} samples")
+        X_val = X_val_secondary
+        y_val = y_val_secondary
+
+    # 5. Print dataset distribution
+    _print_dataset_distribution(
+        y_train,
+        y_val,
+        title="TRANSFER LEARNING DATASET DISTRIBUTION",
+        continuous=on_the_fly_enabled,
+        window_size=on_the_fly_window_size,
+        step_size=on_the_fly_step_size,
+    )
+
+    print(f"Training on {_count_samples(X_train, y_train)} samples, Validating on {_count_samples(X_val, y_val)} samples...")
+
+    # 6. Train with transfer learning
+    trained_model = train_transfer_learning(
+        X_train, y_train, X_val, y_val,
+        pretrained_model_path=args.pretrained,
+        freeze_layers=args.freeze,
+        use_on_the_fly=on_the_fly_enabled,
+        window_size=on_the_fly_window_size,
+        step_size=on_the_fly_step_size,
+        active_channels=selected_active_channels,
+    )
+    return trained_model
+
+
+def standard_pipeline(
+    selected_collected_for_main_modes,
+    collected_raw_path,
+    collected_edited_path,
+    on_the_fly_enabled,
+    on_the_fly_window_size,
+    on_the_fly_step_size,
+    selected_active_channels,
+):
+    """Implements the standard 80-20 train/validation pipeline."""
+    print("Loading dataset with Standard 80-20 Training-Validation Split...")
+
+    secondary_subjects = REPOSITORY.discover_participants('secondary')
+    if len(secondary_subjects) == 0:
+        secondary_subjects = list(range(1, 9))
+        print("[WARNING] Could not auto-discover secondary subjects. Falling back to [1..8].")
+
+    print("\n[Standard Mode] Loading secondary data...")
+    X_secondary, y_secondary = DataPreparation.load_and_prepare_dataset(
+        base_path=Config.SECONDARY_DATA_PATH,
+        include_subjects=secondary_subjects,
+        include_noise_aug=True,
+        return_continuous=on_the_fly_enabled,
+    )
+
+    dataset_parts = [(X_secondary, y_secondary)]
+
+    if len(selected_collected_for_main_modes) > 0:
+        print("\n[Standard Mode] Loading selected collected participants...")
+        X_collected, y_collected = DataPreparation.load_collected_data(
+            folder_path=collected_raw_path,
+            labelled_folder_path=collected_edited_path,
+            augment=True,
+            include_noise_aug=True,
+            include_participants=selected_collected_for_main_modes,
+            return_continuous=on_the_fly_enabled,
+        )
+        dataset_parts.append((X_collected, y_collected))
+
+    X_all, y_all = _concat_dataset_parts(dataset_parts)
+
+    if X_all is None or _count_samples(X_all, y_all) == 0:
+        print("ERROR: No data loaded. Check your file paths and labels.")
+        exit(1)
+
+    print("\n[Standard Mode] Performing 80-20 train-validation split...")
+    if _is_continuous_emg_layout(X_all, y_all):
+        split_idx = int(X_all.shape[1] * (1.0 - Config.TEST_SPLIT))
+        split_idx = max(1, min(split_idx, X_all.shape[1] - 1))
+
+        X_train = X_all[:, :split_idx]
+        X_val = X_all[:, split_idx:]
+        y_train = y_all[:split_idx]
+        y_val = y_all[split_idx:]
+    else:
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_all, y_all, test_size=Config.TEST_SPLIT, random_state=42, shuffle=False
+        )
+
+    _print_dataset_distribution(
+        y_train,
+        y_val,
+        title="DATASET DISTRIBUTION",
+        continuous=on_the_fly_enabled,
+        window_size=on_the_fly_window_size,
+        step_size=on_the_fly_step_size,
+    )
+
+    print(f"Training on {_count_samples(X_train, y_train)} samples, Validating on {_count_samples(X_val, y_val)} samples...")
+
+    train_model(
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        epochs=Config.EPOCHS,
+        batch_size=Config.BATCH_SIZE,
+        patience=Config.PATIENCE,
+        use_on_the_fly=on_the_fly_enabled,
+        window_size=on_the_fly_window_size,
+        step_size=on_the_fly_step_size,
+        active_channels=selected_active_channels,
+    )
+
+
+def _build_arg_parser():
+    """Builds the CLI parser for training mode selection."""
     import argparse
 
-    on_the_fly_enabled = bool(getattr(Config, 'ON_THE_FLY_WINDOW_SLICING', False))
-    on_the_fly_window_size = int(getattr(Config, 'ON_THE_FLY_WINDOW_SIZE', Config.WINDOW_SIZE))
-    on_the_fly_step_size = int(getattr(Config, 'ON_THE_FLY_STEP_SIZE', Config.INCREMENT))
-    on_the_fly_active_channels_raw = getattr(Config, 'ON_THE_FLY_ACTIVE_CHANNELS', None)
-    
     parser = argparse.ArgumentParser(description="Train ShoulderRCNN model")
     parser.add_argument('--mode', type=str, choices=['loso', 'transfer', 'standard'], default='loso',
                        help='Training mode: loso (Leave-One-Subject-Out), transfer (Transfer Learning), or standard (80-20 split)')
@@ -826,6 +1275,17 @@ if __name__ == "__main__":
         help='Optional participant list for collected transfer split, e.g. "[1,2,4]". '
              'These participants are used for training; unlisted collected participants are excluded from training validation.',
     )
+    return parser
+
+
+def main():
+    """Entry point for training mode dispatch."""
+    on_the_fly_enabled = bool(getattr(Config, 'ON_THE_FLY_WINDOW_SLICING', False))
+    on_the_fly_window_size = int(getattr(Config, 'ON_THE_FLY_WINDOW_SIZE', Config.WINDOW_SIZE))
+    on_the_fly_step_size = int(getattr(Config, 'ON_THE_FLY_STEP_SIZE', Config.INCREMENT))
+    on_the_fly_active_channels_raw = getattr(Config, 'ON_THE_FLY_ACTIVE_CHANNELS', None)
+
+    parser = _build_arg_parser()
     args = parser.parse_args()
 
     try:
@@ -846,326 +1306,46 @@ if __name__ == "__main__":
         print(f"\nERROR: {exc}")
         exit(1)
 
-    include_collected_main_modes = args.include_collected or (selected_collected_for_main_modes is not None and len(selected_collected_for_main_modes) > 0)
     collected_raw_path = REPOSITORY.raw_root('collected')
     collected_edited_path = REPOSITORY.edited_root('collected')
+    selected_collected_for_main_modes = _resolve_collected_participants_for_main_modes(
+        args,
+        selected_collected_for_main_modes,
+        collected_raw_path,
+    )
 
-    if include_collected_main_modes and args.mode in ('loso', 'standard'):
-        available_collected = REPOSITORY.discover_participants('collected')
-        if len(available_collected) == 0:
-            print(f"\nERROR: --include_collected requested but no collected files were found at {collected_raw_path}")
-            exit(1)
-
-        if selected_collected_for_main_modes is None:
-            selected_collected_for_main_modes = available_collected
-        elif len(selected_collected_for_main_modes) > 0:
-            # Only validate if non-empty list was explicitly provided
-            missing_participants = sorted(set(selected_collected_for_main_modes) - set(available_collected))
-            if missing_participants:
-                print(f"\nERROR: Requested collected participants not found: {missing_participants}")
-                print(f"Available collected participants: {available_collected}")
-                exit(1)
-
-        if len(selected_collected_for_main_modes) > 0:
-            print("\n[Collected Integration] Enabled for main training mode.")
-            print(f"  - Included collected participants: {selected_collected_for_main_modes}")
-        else:
-            print("\n[Control Case] No collected participants selected (empty list).")
-    elif selected_collected_for_main_modes is not None and args.mode == 'transfer':
-        print("\n[Info] --collected_participants is ignored in transfer mode.")
-        print("[Info] Use --collected_train_participants for transfer participant splits.")
-        selected_collected_for_main_modes = []
-    else:
-        selected_collected_for_main_modes = []
-    
-    # ====================================================================================
-    # LEAVE-ONE-SUBJECT-OUT (LOSO) TRAINING
-    # ====================================================================================
     if args.mode == 'loso':
-        print("Loading dataset with Leave-One-Subject-Out Validation...")
-
-        secondary_subjects = REPOSITORY.discover_participants('secondary')
-        if len(secondary_subjects) == 0:
-            secondary_subjects = list(range(1, 9))
-            print("[WARNING] Could not auto-discover secondary subjects. Falling back to [1..8].")
-
-        if len(secondary_subjects) < 2:
-            print("ERROR: LOSO requires at least 2 secondary participants.")
-            exit(1)
-
-        # Keep original LOSO behavior: train on all-but-last subject, validate on last subject.
-        train_secondary_subjects = secondary_subjects[:-1]
-        val_secondary_subject = secondary_subjects[-1]
-
-        print(f"\n[LOSO] Training secondary subjects: {train_secondary_subjects}")
-        print(f"[LOSO] Validation secondary subject: {val_secondary_subject}")
-        if len(selected_collected_for_main_modes) > 0:
-            print(f"[LOSO] Appending collected participants to TRAINING only: {selected_collected_for_main_modes}")
-
-        X_train_secondary, y_train_secondary = DataPreparation.load_and_prepare_dataset(
-            base_path=Config.SECONDARY_DATA_PATH,
-            include_subjects=train_secondary_subjects,
-            include_noise_aug=True,
-            return_continuous=on_the_fly_enabled,
+        loso_pipeline(
+            selected_collected_for_main_modes,
+            collected_raw_path,
+            collected_edited_path,
+            on_the_fly_enabled,
+            on_the_fly_window_size,
+            on_the_fly_step_size,
+            selected_active_channels,
         )
-
-        train_parts = [(X_train_secondary, y_train_secondary)]
-        if len(selected_collected_for_main_modes) > 0:
-            X_train_collected, y_train_collected = DataPreparation.load_collected_data(
-                folder_path=collected_raw_path,
-                labelled_folder_path=collected_edited_path,
-                augment=True,
-                include_noise_aug=True,
-                include_participants=selected_collected_for_main_modes,
-                return_continuous=on_the_fly_enabled,
-            )
-            train_parts.append((X_train_collected, y_train_collected))
-
-        X_train, y_train = _concat_dataset_parts(train_parts)
-
-        print(f"\n[LOSO] Loading secondary VALIDATION data from Subject {val_secondary_subject}...")
-        X_val, y_val = DataPreparation.load_and_prepare_dataset(
-            base_path=Config.SECONDARY_DATA_PATH,
-            include_subjects=[val_secondary_subject],
-            include_noise_aug=False,
-            return_continuous=on_the_fly_enabled,
-        )
-
-        if X_train is None or X_val is None or _count_samples(X_train, y_train) == 0 or _count_samples(X_val, y_val) == 0:
-            print("ERROR: No data loaded. Check your file paths and labels.")
-            exit(1)
-
-        _print_dataset_distribution(
-            y_train,
-            y_val,
-            title="LOSO DATASET DISTRIBUTION",
-            continuous=on_the_fly_enabled,
-            window_size=on_the_fly_window_size,
-            step_size=on_the_fly_step_size,
-        )
-        print(f"Training on {_count_samples(X_train, y_train)} samples, Validating on {_count_samples(X_val, y_val)} samples...")
-
-        train_model(
-            X_train,
-            y_train,
-            X_val,
-            y_val,
-            epochs=Config.EPOCHS,
-            batch_size=Config.BATCH_SIZE,
-            patience=Config.PATIENCE,
-            use_on_the_fly=on_the_fly_enabled,
-            window_size=on_the_fly_window_size,
-            step_size=on_the_fly_step_size,
-            active_channels=selected_active_channels,
-        )
-    
-    # ====================================================================================
-    # TRANSFER LEARNING TRAINING
-    # ====================================================================================
     elif args.mode == 'transfer':
-        print("Starting Transfer Learning Training...")
-        print(f"Pretrained model: {args.pretrained}")
-        print(f"Freeze backbone: {args.freeze}")
-
-        try:
-            selected_train_participants = _parse_participant_list(args.collected_train_participants)
-        except ValueError as exc:
-            print(f"\n✗ ERROR: {exc}")
-            exit(1)
-
-        # Optional collected participant selection for TRAINING only.
-        if selected_train_participants is not None and len(selected_train_participants) > 0:
-            collected_raw_path = REPOSITORY.raw_root('collected')
-            collected_edited_path = REPOSITORY.edited_root('collected')
-
-            available_participants = REPOSITORY.discover_participants('collected')
-            if len(available_participants) == 0:
-                print(f"\n✗ ERROR: No collected files were found at {collected_raw_path}")
-                exit(1)
-
-            missing_participants = sorted(set(selected_train_participants) - set(available_participants))
-            if missing_participants:
-                print(
-                    f"\n✗ ERROR: Requested training participants not found in collected data: {missing_participants}"
-                )
-                print(f"Available collected participants: {available_participants}")
-                exit(1)
-
-            print("\n[Transfer Learning] Using selected collected participants for TRAINING:")
-            print(f"  - Train participants: {selected_train_participants}")
-            print("  - Unlisted collected participants are excluded from training validation")
-            print(f"  - Raw source: {collected_raw_path}")
-
-            print("\n[Transfer Learning] Loading collected TRAINING data from selected participants...")
-            X_train, y_train = DataPreparation.load_collected_data(
-                folder_path=collected_raw_path,
-                labelled_folder_path=collected_edited_path,
-                augment=True,
-                include_noise_aug=True,
-                include_participants=selected_train_participants,
-                return_continuous=on_the_fly_enabled,
-            )
-            X_val_collected, y_val_collected = None, None
-        elif selected_train_participants is None:
-            # Legacy folder-based split (no collected participants specified, try legacy folders)
-            print("\n[Transfer Learning] Loading TRAINING data from collected_data/training...")
-            X_train, y_train = DataPreparation.load_collected_data(
-                folder_path='./collected_data/training',
-                augment=True,
-                include_noise_aug=True,
-                return_continuous=on_the_fly_enabled,
-            )
-
-            print("\n[Transfer Learning] Checking for validation data in collected_data/validation...")
-            X_val_collected, y_val_collected = DataPreparation.load_collected_data(
-                folder_path='./collected_data/validation',
-                augment=True,
-                include_noise_aug=False,
-                return_continuous=on_the_fly_enabled,
-            )
-        else:
-            # Control case: empty list provided, use SECONDARY DATA ONLY (no collected data)
-            print("\n[Control Case] Empty collected participant list provided.")
-            print("[Transfer Learning] Using SECONDARY DATA for both TRAINING and VALIDATION (control case)...")
-            X_train, y_train = DataPreparation.load_and_prepare_dataset(
-                base_path=Config.SECONDARY_DATA_PATH,
-                include_subjects=[1, 2, 3, 4, 5, 6, 7],  # All but subject 8
-                include_noise_aug=True,
-                return_continuous=on_the_fly_enabled,
-            )
-            X_val_collected, y_val_collected = None, None
-        
-        if X_train is None or _count_samples(X_train, y_train) == 0:
-            print("\n✗ ERROR: No training data available.")
-            print(f"Selected train participants: {selected_train_participants}")
-            exit(1)
-        
-        # 3. Always load secondary data validation (from subject 8 LOSO fold)
-        print("\n[Transfer Learning] Loading VALIDATION data from secondary_data (Subject 8)...")
-        X_val_secondary, y_val_secondary = DataPreparation.load_and_prepare_dataset(
-            base_path=Config.SECONDARY_DATA_PATH,
-            include_subjects=[8],
-            include_noise_aug=False,
-            return_continuous=on_the_fly_enabled,
+        transfer_pipeline(
+            args,
+            on_the_fly_enabled,
+            on_the_fly_window_size,
+            on_the_fly_step_size,
+            selected_active_channels,
         )
-        
-        if X_val_secondary is None or _count_samples(X_val_secondary, y_val_secondary) == 0:
-            print("✗ ERROR: Could not load secondary validation data!")
-            exit(1)
-        
-        # 4. Combine validation datasets
-        if X_val_collected is not None and _count_samples(X_val_collected, y_val_collected) > 0:
-            print(f"\n[Transfer Learning] Combining validation sets:")
-            print(f"  - Collected: {_count_samples(X_val_collected, y_val_collected)} samples")
-            print(f"  - Secondary: {_count_samples(X_val_secondary, y_val_secondary)} samples")
-            X_val, y_val = _concat_dataset_parts([
-                (X_val_secondary, y_val_secondary),
-                (X_val_collected, y_val_collected),
-            ])
-            print(f"  - Total: {_count_samples(X_val, y_val)} samples")
-        else:
-            print(f"\n[Transfer Learning] No collected validation data found. Using only secondary data validation.")
-            print(f"  - Secondary: {_count_samples(X_val_secondary, y_val_secondary)} samples")
-            X_val = X_val_secondary
-            y_val = y_val_secondary
-        
-        # 5. Print dataset distribution
-        _print_dataset_distribution(
-            y_train,
-            y_val,
-            title="TRANSFER LEARNING DATASET DISTRIBUTION",
-            continuous=on_the_fly_enabled,
-            window_size=on_the_fly_window_size,
-            step_size=on_the_fly_step_size,
-        )
-        
-        print(f"Training on {_count_samples(X_train, y_train)} samples, Validating on {_count_samples(X_val, y_val)} samples...")
-        
-        # 6. Train with transfer learning
-        trained_model = train_transfer_learning(
-            X_train, y_train, X_val, y_val,
-            pretrained_model_path=args.pretrained,
-            freeze_layers=args.freeze,
-            use_on_the_fly=on_the_fly_enabled,
-            window_size=on_the_fly_window_size,
-            step_size=on_the_fly_step_size,
-            active_channels=selected_active_channels,
-        )
-    
-    # ====================================================================================
-    # STANDARD 80-20 TRAINING
-    # ====================================================================================
     elif args.mode == 'standard':
-        print("Loading dataset with Standard 80-20 Training-Validation Split...")
-
-        secondary_subjects = REPOSITORY.discover_participants('secondary')
-        if len(secondary_subjects) == 0:
-            secondary_subjects = list(range(1, 9))
-            print("[WARNING] Could not auto-discover secondary subjects. Falling back to [1..8].")
-
-        print("\n[Standard Mode] Loading secondary data...")
-        X_secondary, y_secondary = DataPreparation.load_and_prepare_dataset(
-            base_path=Config.SECONDARY_DATA_PATH,
-            include_subjects=secondary_subjects,
-            include_noise_aug=True,
-            return_continuous=on_the_fly_enabled,
+        standard_pipeline(
+            selected_collected_for_main_modes,
+            collected_raw_path,
+            collected_edited_path,
+            on_the_fly_enabled,
+            on_the_fly_window_size,
+            on_the_fly_step_size,
+            selected_active_channels,
         )
 
-        dataset_parts = [(X_secondary, y_secondary)]
+# ====================================================================================
+# ============================== DEBUG/DUMMY TEST ====================================
+# ====================================================================================
 
-        if len(selected_collected_for_main_modes) > 0:
-            print("\n[Standard Mode] Loading selected collected participants...")
-            X_collected, y_collected = DataPreparation.load_collected_data(
-                folder_path=collected_raw_path,
-                labelled_folder_path=collected_edited_path,
-                augment=True,
-                include_noise_aug=True,
-                include_participants=selected_collected_for_main_modes,
-                return_continuous=on_the_fly_enabled,
-            )
-            dataset_parts.append((X_collected, y_collected))
-
-        X_all, y_all = _concat_dataset_parts(dataset_parts)
-
-        if X_all is None or _count_samples(X_all, y_all) == 0:
-            print("ERROR: No data loaded. Check your file paths and labels.")
-            exit(1)
-
-        print("\n[Standard Mode] Performing 80-20 train-validation split...")
-        if _is_continuous_emg_layout(X_all, y_all):
-            split_idx = int(X_all.shape[1] * (1.0 - Config.TEST_SPLIT))
-            split_idx = max(1, min(split_idx, X_all.shape[1] - 1))
-
-            X_train = X_all[:, :split_idx]
-            X_val = X_all[:, split_idx:]
-            y_train = y_all[:split_idx]
-            y_val = y_all[split_idx:]
-        else:
-            X_train, X_val, y_train, y_val = train_test_split(
-                X_all, y_all, test_size=Config.TEST_SPLIT, random_state=42, shuffle=False
-            )
-
-        _print_dataset_distribution(
-            y_train,
-            y_val,
-            title="DATASET DISTRIBUTION",
-            continuous=on_the_fly_enabled,
-            window_size=on_the_fly_window_size,
-            step_size=on_the_fly_step_size,
-        )
-
-        print(f"Training on {_count_samples(X_train, y_train)} samples, Validating on {_count_samples(X_val, y_val)} samples...")
-
-        train_model(
-            X_train,
-            y_train,
-            X_val,
-            y_val,
-            epochs=Config.EPOCHS,
-            batch_size=Config.BATCH_SIZE,
-            patience=Config.PATIENCE,
-            use_on_the_fly=on_the_fly_enabled,
-            window_size=on_the_fly_window_size,
-            step_size=on_the_fly_step_size,
-            active_channels=selected_active_channels,
-        )
+if __name__ == "__main__":
+    main()

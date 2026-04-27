@@ -52,7 +52,7 @@ FS_KINEMATIC: float = 60.0                # simulated camera rate
 
 # Participants raised their arm roughly twice as fast as the 3 s elevation window,
 # so the ramp occupies ~half that time on each side.
-RAMP_DURATION_S: float = 1.5
+RAMP_DURATION_S: float = 0.5
 RAMP_SAMPLES_KIN: int = int(RAMP_DURATION_S * FS_KINEMATIC)  # 90 samples at 60 Hz
 
 DOF_NAMES = ["Yaw", "Pitch", "Roll", "Elbow"]
@@ -443,7 +443,7 @@ def _visualise_secondary(
 if __name__ == "__main__":
     import sys
 
-    MODE = "single_collected"   # Options: batch_collected | batch_secondary | single_collected | single_secondary
+    MODE = "batch_collected"   # Options: batch_collected | batch_secondary | single_collected | single_secondary
 
     if MODE == "batch_collected":
         batch_generate_collected(show_plots=False)

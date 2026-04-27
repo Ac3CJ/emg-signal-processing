@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -62,6 +63,7 @@ class LoadedSignal:
     file_path: str
     raw_data: np.ndarray  # Shape: [num_channels, num_samples]
     robust_minmax: Optional[np.ndarray]
+    kinematic_data: Optional[np.ndarray] = None  # Shape: [N] (secondary, 1 angle) OR [N, 4] (collected, 4 DOFs)
 
 
 class SignalViewerGUI(QMainWindow):
@@ -136,6 +138,9 @@ class SignalViewerGUI(QMainWindow):
         self.toggle_inject_noise = QCheckBox("Inject Noise (Primary)")
         self.toggle_inject_noise.setChecked(False)
 
+        self.toggle_show_kinematics = QCheckBox("Show Kinematics")
+        self.toggle_show_kinematics.setChecked(False)
+
         self.noise_magnitude_edit = QLineEdit("0.0")
         self.noise_magnitude_edit.setFixedWidth(110)
         self.noise_magnitude_edit.setToolTip(
@@ -164,13 +169,14 @@ class SignalViewerGUI(QMainWindow):
 
         controls_layout.addWidget(self.toggle_show_windows, 3, 1)
         controls_layout.addWidget(self.toggle_lock_spec_colors, 3, 2)
+        controls_layout.addWidget(self.toggle_show_kinematics, 3, 3)
 
-        controls_layout.addWidget(self.toggle_inject_noise, 3, 3)
-        controls_layout.addWidget(QLabel("Noise Magnitude"), 3, 4)
-        controls_layout.addWidget(self.noise_magnitude_edit, 3, 5)
+        controls_layout.addWidget(self.reset_zoom_btn, 3, 6)
 
-        controls_layout.addWidget(self.reset_zoom_btn, 2, 6)
-        controls_layout.addWidget(self.refresh_btn, 3, 6)
+        controls_layout.addWidget(self.toggle_inject_noise, 4, 1)
+        controls_layout.addWidget(QLabel("Noise Magnitude"), 4, 2)
+        controls_layout.addWidget(self.noise_magnitude_edit, 4, 3)
+        controls_layout.addWidget(self.refresh_btn, 4, 6)
 
         root_layout.addWidget(controls_group)
 
@@ -178,11 +184,12 @@ class SignalViewerGUI(QMainWindow):
         self.canvas = FigureCanvas(self.figure)
         root_layout.addWidget(self.canvas, stretch=1)
 
-        gs = self.figure.add_gridspec(4, 1, height_ratios=[2.1, 1.2, 1.2, 0.7], hspace=0.08)
+        gs = self.figure.add_gridspec(5, 1, height_ratios=[2.1, 1.2, 1.2, 1.0, 0.7], hspace=0.08)
         self.ax_main = self.figure.add_subplot(gs[0, 0])
         self.ax_spec_primary = self.figure.add_subplot(gs[1, 0], sharex=self.ax_main)
         self.ax_spec_secondary = self.figure.add_subplot(gs[2, 0], sharex=self.ax_main)
-        self.ax_minimap = self.figure.add_subplot(gs[3, 0], sharex=self.ax_main)
+        self.ax_kinematic = self.figure.add_subplot(gs[3, 0], sharex=self.ax_main)
+        self.ax_minimap = self.figure.add_subplot(gs[4, 0], sharex=self.ax_main)
 
         self.span_selector = SpanSelector(
             self.ax_minimap,
@@ -223,6 +230,8 @@ class SignalViewerGUI(QMainWindow):
 
         self.toggle_inject_noise.toggled.connect(lambda _=None: self._refresh_view())
         self.noise_magnitude_edit.editingFinished.connect(self._refresh_view)
+
+        self.toggle_show_kinematics.toggled.connect(lambda _=None: self._refresh_view())
 
         self.reset_zoom_btn.clicked.connect(self._reset_zoom)
         self.refresh_btn.clicked.connect(self._refresh_view)
@@ -271,6 +280,51 @@ class SignalViewerGUI(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Secondary Load Error", str(exc))
 
+    def _try_load_kinematic_data(self, file_path: str) -> Optional[np.ndarray]:
+        file_dir = os.path.dirname(file_path)
+        file_name = os.path.basename(file_path)
+
+        # Sibling raw/edited swap covers the collected dataset, where the kinematic
+        # companion only lives under edited/ even when the EMG file was loaded from raw/.
+        search_dirs = [file_dir]
+        sep = os.sep
+        anchored = file_dir + sep
+        if f"{sep}raw{sep}" in anchored:
+            search_dirs.append(anchored.replace(f"{sep}raw{sep}", f"{sep}edited{sep}", 1).rstrip(sep))
+        elif f"{sep}edited{sep}" in anchored:
+            search_dirs.append(anchored.replace(f"{sep}edited{sep}", f"{sep}raw{sep}", 1).rstrip(sep))
+
+        candidates: list[Tuple[str, str]] = []  # (path, mat_key)
+
+        sec_match = re.match(r'^[Mm]ovimento(\d+)(?:_labelled)?\.mat$', file_name)
+        if sec_match:
+            movement = sec_match.group(1)
+            for d in search_dirs:
+                candidates.append((os.path.join(d, f"MovimentoAngS{movement}.mat"), 'angolospalla'))
+                candidates.append((os.path.join(d, f"MovimentoAngS{movement}_edit.mat"), 'angolospalla'))
+
+        col_match = re.match(r'^P(\d+)M(\d+)(?:_labelled)?\.mat$', file_name)
+        if col_match:
+            participant, movement = col_match.group(1), col_match.group(2)
+            for d in search_dirs:
+                candidates.append((os.path.join(d, f"P{participant}M{movement}Kinematic.mat"), 'KINEMATICS'))
+
+        for path, key in candidates:
+            if not os.path.exists(path):
+                continue
+            try:
+                mat = scipy.io.loadmat(path)
+            except Exception:
+                continue
+            if key not in mat:
+                continue
+            arr = np.asarray(mat[key]).astype(np.float64)
+            if arr.ndim == 2 and 1 in arr.shape:
+                arr = arr.flatten()
+            return arr
+
+        return None
+
     def _load_signal(self, file_path: str) -> LoadedSignal:
         mat = scipy.io.loadmat(file_path)
         if "EMGDATA" not in mat:
@@ -298,7 +352,8 @@ class SignalViewerGUI(QMainWindow):
                 except Exception:
                     robust = None
 
-        return LoadedSignal(file_path=file_path, raw_data=raw, robust_minmax=robust)
+        kinematic_data = self._try_load_kinematic_data(file_path)
+        return LoadedSignal(file_path=file_path, raw_data=raw, robust_minmax=robust, kinematic_data=kinematic_data)
 
     # ------------------------------------------------------------------
     # Processing and plotting
@@ -498,6 +553,7 @@ class SignalViewerGUI(QMainWindow):
         self.ax_main.clear()
         self.ax_spec_primary.clear()
         self.ax_spec_secondary.clear()
+        self.ax_kinematic.clear()
         self.ax_minimap.clear()
 
         self.ax_main.set_title("Primary (blue) with Secondary (gray) overlay")
@@ -639,6 +695,9 @@ class SignalViewerGUI(QMainWindow):
         self.ax_spec_primary.set_xlim(*self.current_xlim)
         self.ax_spec_secondary.set_xlim(*self.current_xlim)
 
+        # Kinematic panel
+        self._draw_kinematic_axis()
+
         self._update_readouts(
             channel=channel,
             primary_pre_norm=primary_ch_pre_norm,
@@ -677,6 +736,46 @@ class SignalViewerGUI(QMainWindow):
         )
 
         ax.set_ylim(0.0, 150.0)
+        ax.set_xlim(*self.current_xlim)
+
+    def _draw_kinematic_axis(self) -> None:
+        ax = self.ax_kinematic
+        if not self.toggle_show_kinematics.isChecked():
+            ax.set_visible(False)
+            return
+
+        ax.set_visible(True)
+        ax.set_title("Kinematics")
+        ax.set_ylabel("Angle (°)")
+        ax.grid(True, linestyle=":", alpha=0.6)
+
+        if self.primary_signal is None or self.primary_signal.kinematic_data is None:
+            ax.text(
+                0.5, 0.5,
+                "No kinematic data — companion file not found for this recording.",
+                transform=ax.transAxes,
+                ha="center", va="center",
+                color="goldenrod", fontsize=10,
+            )
+            return
+
+        kin = self.primary_signal.kinematic_data
+
+        if kin.ndim == 1:
+            x_kin = self._percent_time_axis(kin.size)
+            ax.plot(x_kin, kin, color="tab:orange", linewidth=1.4, label="Shoulder Angle (°)")
+            ax.legend(loc="upper right")
+        else:
+            dof_labels = ["Yaw", "Pitch", "Roll", "Elbow"]
+            dof_colors = ["tab:orange", "tab:green", "tab:red", "tab:purple"]
+            n_samples, n_dofs = kin.shape
+            x_kin = self._percent_time_axis(n_samples)
+            for i in range(n_dofs):
+                label = dof_labels[i] if i < len(dof_labels) else f"DOF {i}"
+                color = dof_colors[i] if i < len(dof_colors) else None
+                ax.plot(x_kin, kin[:, i], color=color, linewidth=1.2, label=label)
+            ax.legend(loc="upper right", fontsize=8, ncol=min(n_dofs, 4))
+
         ax.set_xlim(*self.current_xlim)
 
     def _update_readouts(
@@ -732,6 +831,8 @@ class SignalViewerGUI(QMainWindow):
         self.ax_main.set_xlim(*self.current_xlim)
         self.ax_spec_primary.set_xlim(*self.current_xlim)
         self.ax_spec_secondary.set_xlim(*self.current_xlim)
+        if self.ax_kinematic.get_visible():
+            self.ax_kinematic.set_xlim(*self.current_xlim)
         self.canvas.draw_idle()
 
     def _reset_zoom(self) -> None:

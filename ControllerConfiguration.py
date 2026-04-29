@@ -17,6 +17,7 @@ NUM_OUTPUTS = 4             # Output DOFs: [Yaw, Pitch, Roll, Elbow]
 WINDOW_SIZE = 100           # 100 ms window size
 INCREMENT = 20              # 20 ms step size
 SMOOTHING_ALPHA = 0.1       # Exponential moving average factor for kinematic output (0.0 to 1.0)
+WARMUP_SECONDS = 0.5        # Skip emitting predictions until this much real data has streamed in (online + offline).
 
 # Optional training mode: slice windows dynamically from continuous EMG arrays.
 # If disabled, training uses pre-windowed tensors (legacy behavior).
@@ -56,7 +57,7 @@ MIXUP_RATIO = 0.75           # Ratio of new mixup samples to generate (0.5 = dat
 TRAINING_NOISE_MAGNITUDES = [0.000005, 0.00001]
 
 REST_MIXUP_ALPHA = 0.2           # Alpha parameter for the Beta distribution (controls blend intensity)
-REST_MIXUP_RATIO = 0.1           # Ratio of new mixup samples to generate (0.5 = dataset increases by 50%)
+REST_MIXUP_RATIO = 0.25           # Ratio of new mixup samples to generate (0.5 = dataset increases by 50%)
 
 # ====================================================================================
 # 5. NEURAL NETWORK TRAINING PARAMETERS
@@ -79,7 +80,7 @@ TRANSFER_LEARNING_EPOCHS = 75       # Fewer epochs needed for fine-tuning
 TRANSFER_LEARNING_LEARNING_RATE = 0.0001  # Lower learning rate for fine-tuning
 TRANSFER_LEARNING_BATCH_SIZE = 128  # Smaller batch size for collected data
 TRANSFER_LEARNING_PATIENCE = 20     # Early stopping patience for transfer learning
-FREEZE_BACKBONE_LAYERS = True       # Freeze convolutional layers
+FREEZE_BACKBONE_LAYERS = False       # Freeze convolutional layers
 NUM_LAYERS_TO_UNFREEZE = 2          # Number of final layers to unfreeze for training
 TRANSFER_LEARNING_MODEL_SAVE_PATH = 'best_shoulder_rcnn_transfer.pth'
 
@@ -165,7 +166,11 @@ SECONDARY_BLACKLIST = [
 ]
 
 COLLECTED_BLACKLIST = [
-    (6, 1),     # Completely Corrupted
+    (6, 1),  # Completely Corrupted
+    # P5 — all trials corrupted (electrode misalignment across the session)
+    (5, 1), (5, 2), (5, 3), (5, 4), (5, 5), (5, 6), (5, 7), (5, 8), (5, 9),
+    # P8M4–P8M8 — electrodes drifted out of alignment mid-session
+    (8, 4), (8, 5), (8, 6), (8, 7), (8, 8),
 ]
 
 # New CORRUPTED TRIALS identified during validation (added 2024-06-15, much worse than before)

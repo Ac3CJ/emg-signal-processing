@@ -95,9 +95,12 @@ class RealTimeProstheticController:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         print(f"[Controller] UDP Socket initialized. Target: {Config.UDP_IP}:{Config.UDP_PORT}")
         
-        # --- Recording State & STOP Command Handling ---
+        # --- Recording State & Inter-Process Command Handling ---
         self.stop_recording_requested = False
         self.recording_active = False
+        self.ack_received = threading.Event()  # Set when Unity replies CMD:ACK
+        self.exit_requested = False  # Set by stdin watcher on 'finish'/'exit'
+        self.session_save_paths = []  # Tracks files saved during the current session
         self.input_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.input_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
@@ -123,7 +126,9 @@ class RealTimeProstheticController:
             print(f"[Controller] WARNING: '{model_path}' not found. Using untrained weights.")
         
         self.data_buffer = np.zeros((Config.NUM_CHANNELS, Config.WINDOW_SIZE))
-        
+        self.warmup_samples_required = int(getattr(Config, 'WARMUP_SECONDS', 0.0) * Config.FS)
+        self.real_samples_seen = 0
+
         self.alpha = Config.SMOOTHING_ALPHA
         self.smoothed_output = np.zeros(Config.NUM_OUTPUTS)
         
@@ -345,7 +350,10 @@ class RealTimeProstheticController:
                 if "CMD:STOP" in command:
                     print("[UDP Listener] STOP command detected!")
                     self.stop_recording_requested = True
-                
+                elif "CMD:ACK" in command:
+                    print("[UDP Listener] Unity ACK received.")
+                    self.ack_received.set()
+
             except BlockingIOError:
                 # No data available, continue checking
                 time.sleep(0.01)
@@ -353,38 +361,60 @@ class RealTimeProstheticController:
                 print(f"[UDP Listener] Error receiving command: {e}")
                 time.sleep(0.1)
 
-    def _save_and_transfer_collection(self):
-        """
-        Save the collected EMG data locally on the Pi.
-        The Windows deployment script will automatically pull it upon exit.
-        """
-        if not isinstance(self.reading_mode, DataCollectionMode):
-            print("[Controller] Not in data collection mode. Skipping save.")
-            return
-        
+    def _send_command(self, command):
+        """Sends a UDP command to Unity (Config.UDP_IP:Config.UDP_PORT)."""
         try:
-            # Save .mat file locally on Raspberry Pi
-            output_path = self.reading_mode.save_collection()
-            print(f"[Controller] Data saved locally: {output_path}")
-            print(f"[Controller] Windows batch script will automatically retrieve this file upon exit.")
-            
+            self.sock.sendto(command.encode('utf-8'), (Config.UDP_IP, Config.UDP_PORT))
+            print(f"[Controller] UDP command sent: {command}")
         except Exception as e:
-            print(f"[Controller] ERROR during save: {e}")
+            print(f"[Controller] WARNING: Could not send UDP command: {e}")
 
-    def _setup_data_collection(self):
-        """
-        If in data collection mode, handle the movement selection and send the appropriate UDP command to Unity.
-        Wait for the recording to start before entering the main control loop.
-        """
+    def _is_collection_mode(self):
+        """Duck-type check that avoids importing DataCollectionMode at module load."""
+        return self.use_hardware and self.reading_mode is not None and hasattr(self.reading_mode, 'save_collection')
 
-        print("\n" + "="*70)
-        print("DATA COLLECTION MODE - SELECT MOVEMENT")
-        print("="*70)
-        print(f"Collection name: {self.reading_mode.collection_name}\n")
-        selected_movement = None
-        
-        # Display movement table
-        print("Available Movements:")
+    def _start_stdin_watcher(self):
+        """Background thread reads stdin; sets self.exit_requested on 'finish'/'exit'."""
+        def watch_stdin():
+            print("[Controller] Stdin watcher active. Type 'finish' or 'exit' to stop.")
+            while self.running:
+                try:
+                    line = sys.stdin.readline()
+                except Exception:
+                    return
+                if not line:
+                    return
+                cmd = line.strip().lower()
+                if cmd in ('finish', 'finished', 'exit', 'quit'):
+                    print(f"[Controller] '{cmd}' received. Will exit at next safe checkpoint.")
+                    self.exit_requested = True
+                    return
+
+        thread = threading.Thread(target=watch_stdin, daemon=True)
+        thread.start()
+
+    def _save_trial(self, movement_id):
+        """Saves the current trial buffer to biosignal_data/collected/raw/P{id}M{m}.mat."""
+        if not self._is_collection_mode():
+            return None
+
+        participant_num = self._participant_token_to_int(self.participant_id)
+        if participant_num is None:
+            print("[Controller] WARNING: Could not resolve participant ID for save. Falling back to default name.")
+            return self.reading_mode.save_collection()
+
+        selection = FileSelection(data_type="collected", participant=participant_num, movement=movement_id)
+        save_path = self.repo.raw_file_path(selection)
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        return self.reading_mode.save_collection(output_path=save_path)
+
+    def _prompt_movement_or_finish(self):
+        """Displays the movement menu and reads a selection. Returns movement_id or None for 'finish'."""
+        print("\n" + "=" * 70)
+        print("DATA COLLECTION SESSION — SELECT MOVEMENT")
+        print("=" * 70)
+        print(f"Participant: {self.participant_id}")
+        print(f"Calibration: {'OK' if self.is_calibrated else 'UNCALIBRATED — collect M10 to calibrate.'}")
         print("-" * 70)
         print(f"{'ID':<5} {'Movement':<30} {'Kinematics':<35}")
         print("-" * 70)
@@ -393,170 +423,225 @@ class RealTimeProstheticController:
             kinematics = Config.TARGET_MAPPING[movement_id]
             kinematics_str = f"[Yaw={kinematics[0]:.0f}°, Pitch={kinematics[1]:.0f}°, Roll={kinematics[2]:.0f}°, Elbow={kinematics[3]:.0f}°]"
             print(f"{movement_id:<5} {movement_name:<30} {kinematics_str:<35}")
+        print(f"{10:<5} {'MVC Trial (auto-recalibrate)':<30}")
         print("-" * 70)
-        print()
-        
-        # Prompt for movement selection
-        while selected_movement is None:
+
+        while True:
             try:
-                user_input = input("Enter movement ID (1-9): ").strip()
-                movement_id = int(user_input)
-                
-                if movement_id < 1 or movement_id > 9:
-                    print(f"[ERROR] Invalid movement ID: {movement_id}. Please enter a number between 1 and 9.")
-                    continue
-                
-                selected_movement = movement_id
-                selected_name = Config.MOVEMENT_NAMES[movement_id]
-                print(f"\n[Controller] Selected Movement {movement_id}: {selected_name}")
-                
-            except ValueError:
-                print(f"[ERROR] Invalid input: '{user_input}'. Please enter a valid number (1-9).")
+                user_input = input("Enter movement ID (1-10) or 'finish': ").strip().lower()
             except EOFError:
-                # Handle SSH headless mode
-                print("[Controller] Running in headless mode. Using default (Movement 9: Rest).")
-                selected_movement = 9
-                selected_name = Config.MOVEMENT_NAMES[9]
+                print("[Controller] EOF on stdin. Ending session.")
+                return None
             except KeyboardInterrupt:
-                print("\n[Controller] Interrupted during movement selection.")
-                return 1
-        
-        # === SEND UDP GO COMMAND WITH MOVEMENT CLASS ===
-        print(f"\n[Controller] Sending GO command to Unity with Movement Class {selected_movement}...")
+                print("\n[Controller] Interrupted during selection. Ending session.")
+                return None
+
+            if user_input in ('finish', 'finished', 'exit', 'quit'):
+                return None
+            try:
+                movement_id = int(user_input)
+            except ValueError:
+                print(f"[ERROR] Invalid input: '{user_input}'. Try again.")
+                continue
+            if movement_id == 10 or movement_id in Config.MOVEMENT_NAMES:
+                return movement_id
+            print(f"[ERROR] Movement ID {movement_id} not recognized.")
+
+    def _stream_one_iteration(self):
+        """Reads one INCREMENT chunk, runs the model (after warmup), pushes to UDP/queue.
+
+        Returns True if a prediction was produced this iteration, False during warmup.
+        Used by both continuous and recording loops.
+        """
+        new_data = self.read_new_samples(Config.INCREMENT)
+
+        self.data_buffer = np.roll(self.data_buffer, -Config.INCREMENT, axis=1)
+        self.data_buffer[:, -Config.INCREMENT:] = new_data
+        self.real_samples_seen += Config.INCREMENT
+
+        if self.real_samples_seen < self.warmup_samples_required:
+            return False
+
+        rectified_window = np.zeros_like(self.data_buffer)
+        for i in range(Config.NUM_CHANNELS):
+            rectified_window[i, :] = SignalProcessing.applyStandardSEMGProcessing(
+                self.data_buffer[i, :],
+                fs=Config.FS,
+            )
+
+        if self.is_calibrated:
+            denominator = (self.norm_max - self.norm_baseline)[:, np.newaxis] + 1e-8
+            emg_window = (rectified_window - self.norm_baseline[:, np.newaxis]) / denominator
+        else:
+            emg_window = rectified_window
+
+        input_tensor = torch.tensor(emg_window, dtype=torch.float32).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            raw_predictions = self.model(input_tensor).cpu().numpy()[0]
+
+        self.smoothed_output = (self.alpha * raw_predictions) + ((1 - self.alpha) * self.smoothed_output)
+        yaw, pitch, roll, elbow = self.smoothed_output
+
+        self.yaw_history = np.roll(self.yaw_history, -1)
+        self.yaw_history[-1] = yaw
+        self.pitch_history = np.roll(self.pitch_history, -1)
+        self.pitch_history[-1] = pitch
+
+        packet_string = f"{yaw:.2f},{pitch:.2f},{roll:.2f},{elbow:.2f}"
         try:
-            go_cmd = f"CMD:GO_RECORDING:{selected_movement}"
-            self.sock.sendto(go_cmd.encode('utf-8'), (Config.UDP_IP, Config.UDP_PORT))
-            print(f"[Controller] UDP command sent: {go_cmd}")
-        except Exception as e:
-            print(f"[Controller] WARNING: Could not send UDP command: {e}")
-        
-        # === 3-SECOND COUNTDOWN BEFORE RECORDING STARTS ===
-        print("\n[Controller] Starting in...")
-        for countdown in range(3, 0, -1):
-            print(f"  {countdown}...", end=" ", flush=True)
-            time.sleep(1)
-        print("GO!")
-        print("[Controller] Recording started. Streaming EMG data to Unity.\n")
-        print("[Controller] Waiting for STOP command from Virtual Environment...")
+            self.sock.sendto(packet_string.encode('utf-8'), (Config.UDP_IP, Config.UDP_PORT))
+        except Exception:
+            pass
+
+        if self.data_queue is not None:
+            try:
+                self.data_queue.put_nowait({
+                    'emg': emg_window.copy(),
+                    'pred': self.smoothed_output.copy(),
+                    'yaw_history': self.yaw_history.copy(),
+                    'pitch_history': self.pitch_history.copy(),
+                })
+            except queue.Full:
+                pass
+
+        return True
+
+    def _run_continuous_loop(self):
+        """Streams predictions to Unity continuously until 'finish'/'exit' is typed (or signal)."""
+        print("[Continuous] Streaming. Type 'finish' or 'exit' (then Enter) to stop.\n")
+        increment_seconds = Config.INCREMENT / 1000.0
+        warmup_announced = self.warmup_samples_required <= 0
+
+        while self.running and not self.exit_requested:
+            had_prediction = self._stream_one_iteration()
+            if had_prediction and not warmup_announced:
+                print(f"[Controller] Warmup complete ({self.warmup_samples_required} samples). Predictions live.")
+                warmup_announced = True
+            time.sleep(increment_seconds)
+
+        print("[Continuous] Stream stopped.")
+
+    def _run_recording_loop(self):
+        """Streams during a single trial until Unity sends CMD:STOP (or session exit)."""
+        print("[Controller] Recording. Streaming EMG to Unity. Awaiting CMD:STOP from Unity...")
         self.recording_active = True
+        self.stop_recording_requested = False
+        self.real_samples_seen = 0  # Restart warmup per trial so settling is per-trial
+        self.data_buffer[:] = 0.0   # Clear stale samples between trials
+        increment_seconds = Config.INCREMENT / 1000.0
+        warmup_announced = self.warmup_samples_required <= 0
+
+        while self.running and self.recording_active and not self.exit_requested:
+            if self.stop_recording_requested:
+                print("[Controller] STOP received. Ending recording.")
+                break
+
+            had_prediction = self._stream_one_iteration()
+            if had_prediction and not warmup_announced:
+                print(f"[Controller] Warmup complete ({self.warmup_samples_required} samples). Predictions live.")
+                warmup_announced = True
+            time.sleep(increment_seconds)
+
+        self.recording_active = False
+        self.stop_recording_requested = False
+
+    def _run_collection_session(self):
+        """Outer session loop: prompt → ACK handshake → countdown → record → save → repeat."""
+        print("\n" + "=" * 70)
+        print(f"DATA COLLECTION SESSION — Participant {self.participant_id}")
+        print("=" * 70)
+        print("Pick a movement per trial. Type 'finish' to end the session.\n")
+
+        while self.running and not self.exit_requested:
+            movement_id = self._prompt_movement_or_finish()
+            if movement_id is None:
+                print("[Session] Finish requested. Ending session.")
+                break
+
+            # Send GO and wait for Unity ACK so countdowns line up
+            self.ack_received.clear()
+            self._send_command(f"CMD:GO_RECORDING:{movement_id}")
+            print("[Controller] Waiting for Unity ACK (timeout 5s)...")
+            ack_ok = self.ack_received.wait(timeout=5.0)
+            if not ack_ok:
+                print("[WARNING] No ACK from Unity. Proceeding without sync — check that Unity is running.")
+            else:
+                print("[Controller] ACK received. Starting synchronized countdown.")
+
+            # 3s countdown — Unity runs its own 3s 'Syncing...' loop in parallel
+            for countdown in range(3, 0, -1):
+                print(f"  {countdown}...", end=" ", flush=True)
+                time.sleep(1.0)
+            print("GO!")
+
+            # Stream until Unity STOP (or session exit)
+            self.reading_mode.clear_collection()
+            self._run_recording_loop()
+
+            # Save the trial buffer to P{id}M{m}.mat
+            try:
+                save_path = self._save_trial(movement_id)
+                if save_path:
+                    self.session_save_paths.append(save_path)
+                    print(f"[Controller] Trial saved: {save_path}")
+            except Exception as e:
+                print(f"[Controller] ERROR saving trial: {e}")
+
+            # If MVC trial just finished, refresh calibration from the new file
+            if movement_id == 10:
+                print("[Controller] M10 saved — re-initializing calibration with the fresh MVC.")
+                self._initialize_calibration_state()
+
+            print("[Session] Returning to menu.\n")
+
+        # Session over — summary
+        print("\n" + "=" * 70)
+        print("SESSION ENDED")
+        print(f"Trials saved this session: {len(self.session_save_paths)}")
+        for path in self.session_save_paths:
+            print(f"  - {path}")
+        print("=" * 70)
 
     def run_forever(self):
-        """Start the real-time control loop (headless or with queue data).
-        
-        This is a pure computation loop that runs in the main or a daemon thread.
-        After each control step, if data_queue is provided, the latest EMG window
-        and predictions are put on the queue for a GUI consumer.
-        """
+        """Entry point: dispatches to continuous loop or collection session loop."""
         mode_desc = "Hardware" if self.use_hardware else "Simulation" if self.simulate_data else "Random Noise"
         print(f"\n[Controller] Starting Real-Time Control ({mode_desc} mode).")
-        print(f"[Controller] Use Ctrl+C to stop.")
-        
-        # === DATA COLLECTION MODE: MOVEMENT SELECTION & START TRIGGER ===
-        is_collecting = self.use_hardware and isinstance(self.reading_mode, DataCollectionMode)
-        
-        if is_collecting:
-            self._setup_data_collection()
-        
+
         self.running = True
-        
-        # --- Graceful Shutdown Handlers ---
+
         def handle_sigint(sig, frame):
-            """Handle Ctrl+C (SIGINT) signal."""
             print("\n[Controller] SIGINT received. Initiating graceful shutdown...")
             self.running = False
-        
+            self.exit_requested = True
+
         def handle_sigterm(sig, frame):
-            """Handle SIGTERM signal (used by systemd/SSH)."""
             print("\n[Controller] SIGTERM received. Initiating graceful shutdown...")
             self.running = False
+            self.exit_requested = True
 
-        # Register signal handlers only on main thread
         if threading.current_thread() is threading.main_thread():
             signal.signal(signal.SIGINT, handle_sigint)
             signal.signal(signal.SIGTERM, handle_sigterm)
 
-        try:
-            if not is_collecting:
-                print("[Controller] Main loop running. Press Ctrl+C to stop.\n")
-            
-            increment_seconds = Config.INCREMENT / 1000.0
-            while self.running:
-                new_data = self.read_new_samples(Config.INCREMENT)
-                
-                self.data_buffer = np.roll(self.data_buffer, -Config.INCREMENT, axis=1)
-                self.data_buffer[:, -Config.INCREMENT:] = new_data
-                
-                # Preprocess: filter + rectify
-                rectified_window = np.zeros_like(self.data_buffer)
-                for i in range(Config.NUM_CHANNELS):
-                    rectified_window[i, :] = SignalProcessing.applyStandardSEMGProcessing(
-                        self.data_buffer[i, :],
-                        fs=Config.FS,
-                    )
+        # Stdin watcher works for both continuous and collection modes
+        self._start_stdin_watcher()
 
-                # Two-state normalization path
-                if self.is_calibrated:
-                    denominator = (self.norm_max - self.norm_baseline)[:, np.newaxis] + 1e-8
-                    emg_window = (rectified_window - self.norm_baseline[:, np.newaxis]) / denominator
-                else:
-                    emg_window = rectified_window
-                
-                # Inference
-                input_tensor = torch.tensor(emg_window, dtype=torch.float32).unsqueeze(0).to(self.device)
-                with torch.no_grad():
-                    raw_predictions = self.model(input_tensor).cpu().numpy()[0]
-                
-                # Smoothing
-                self.smoothed_output = (self.alpha * raw_predictions) + ((1 - self.alpha) * self.smoothed_output)
-                yaw, pitch, roll, elbow = self.smoothed_output
-                
-                # Update history
-                self.yaw_history = np.roll(self.yaw_history, -1)
-                self.yaw_history[-1] = yaw
-                
-                self.pitch_history = np.roll(self.pitch_history, -1)
-                self.pitch_history[-1] = pitch
-                
-                # Telemetry
-                packet_string = f"{yaw:.2f},{pitch:.2f},{roll:.2f},{elbow:.2f}"
-                try:
-                    self.sock.sendto(packet_string.encode('utf-8'), (Config.UDP_IP, Config.UDP_PORT))
-                except Exception as e:
-                    pass
-                
-                # === PRODUCER: Put data on queue if GUI consumer exists ===
-                if self.data_queue is not None:
-                    try:
-                        self.data_queue.put_nowait({
-                            'emg': emg_window.copy(),
-                            'pred': self.smoothed_output.copy(),
-                            'yaw_history': self.yaw_history.copy(),
-                            'pitch_history': self.pitch_history.copy()
-                        })
-                    except queue.Full:
-                        pass  # Drop oldest data if queue is full
-                
-                # Check for STOP command if actively recording
-                if self.recording_active and self.stop_recording_requested:
-                    print("\n[Controller] STOP command received from Virtual Environment!")
-                    self._save_and_transfer_collection()
-                    self.stop_recording_requested = False
-                    self.recording_active = False
-                    self.running = False
-                
-                time.sleep(increment_seconds)
-            
+        try:
+            if self._is_collection_mode():
+                self._run_collection_session()
+            else:
+                self._run_continuous_loop()
             return 0
         except KeyboardInterrupt:
             print("\n[Controller] Keyboard interrupt")
-            self.running = False
             return 0
         except Exception as e:
             print(f"\n[Controller] Error in main loop: {e}", file=sys.stderr)
             import traceback
             traceback.print_exc()
-            self.running = False
             return 1
+        finally:
+            self.running = False
 
     def run(self):
         """Backward-compatible wrapper."""
@@ -840,34 +925,12 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"[Main] Warning: Could not cleanup hardware: {e}")
         
-        # === SAVE DATA IF IN COLLECTION MODE ===
-        if args.hardware and args.collect and reading_mode:
-            try:
-                stats = reading_mode.get_collection_stats()
-                print(f"\n[Main] Collection Statistics:")
-                print(f"       Samples: {stats['sample_count']}")
-                print(f"       Duration: {stats['duration_seconds']:.2f} seconds")
-                print(f"       Memory Used: {stats['memory_mb']:.2f} MB")
-                
-                # In headless mode (SSH), auto-save to default location
-                # In interactive mode, prompt the user
-                if sys.stdin.isatty():
-                    save_prompt = input("[Main] Save collected data? (y/n): ").lower().strip()
-                    if save_prompt == 'y':
-                        output_path = input("[Main] Enter output path (or press Enter for default): ").strip()
-                        if not output_path:
-                            output_path = None
-                        reading_mode.save_collection(output_path=output_path)
-                        print("[Main] ✓ Data saved")
-                else:
-                    # Headless/SSH mode: auto-save to default
-                    print("[Main] Headless mode detected. Auto-saving collected data...")
-                    reading_mode.save_collection()
-                    print("[Main] ✓ Data auto-saved")
-            except EOFError:
-                print("[Main] EOF detected (headless mode). Skipping save prompt.")
-            except Exception as e:
-                print(f"[Main] Error during data saving: {e}")
-        
+        # Per-trial saves are handled inside the session loop now; no end-of-run save.
+        if args.hardware and args.collect and controller is not None:
+            saved = getattr(controller, 'session_save_paths', [])
+            print(f"\n[Main] Session Summary: {len(saved)} trial file(s) saved this session.")
+            for path in saved:
+                print(f"   - {path}")
+
         print("[Main] Shutdown complete\n")
         sys.exit(exit_code)

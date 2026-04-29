@@ -18,18 +18,21 @@ if hasattr(torch.backends, 'xpu'):
 class ContinuousEMGDataset(Dataset):
     """
     Memory-efficient dataset that slices sliding windows on-the-fly from continuous EMG arrays.
-    Windows are generated within contiguous target segments, so no window crosses
-    a segment/class boundary.
+    Windows are generated within contraction segments so no window crosses a segment boundary.
 
     Args:
         continuous_X (np.ndarray): Shape (num_channels, total_samples).
-        continuous_y (np.ndarray): Shape (total_samples, num_outputs).
+        continuous_y (np.ndarray): Shape (total_samples, num_outputs). May contain ramp-shaped
+            per-sample kinematic angles (no constant-target assumption).
         window_size (int): Number of samples per window.
         step_size (int): Number of samples between consecutive windows.
         active_channels (list[int] | None): Optional subset of channels to use.
+        segment_bounds (list[tuple[int, int]] | None): Explicit [start, end) sample-space spans
+            marking each contraction. When omitted, falls back to deriving runs of equal targets
+            from continuous_y — only valid for constant-per-segment label layouts.
     """
 
-    def __init__(self, continuous_X, continuous_y, window_size, step_size, active_channels=None):
+    def __init__(self, continuous_X, continuous_y, window_size, step_size, active_channels=None, segment_bounds=None):
         if not isinstance(continuous_X, np.ndarray):
             raise TypeError("continuous_X must be a numpy.ndarray")
         if not isinstance(continuous_y, np.ndarray):
@@ -78,13 +81,31 @@ class ContinuousEMGDataset(Dataset):
         self.active_channels = channel_indices
         self.total_samples = total_samples
 
-        self.segment_bounds = self._compute_target_run_bounds(self.continuous_y)
+        if segment_bounds is None:
+            self.segment_bounds = self._compute_target_run_bounds(self.continuous_y)
+        else:
+            self.segment_bounds = self._validate_segment_bounds(segment_bounds, total_samples)
         self.window_starts, self.segment_window_spans = self._build_window_starts(
             self.segment_bounds,
             self.window_size,
             self.step_size,
         )
         self.num_windows = int(self.window_starts.shape[0])
+
+    @staticmethod
+    def _validate_segment_bounds(segment_bounds, total_samples):
+        """Coerces explicit bounds into sorted, non-overlapping (start, end) tuples in sample space."""
+        bounds = []
+        for entry in segment_bounds:
+            start, end = int(entry[0]), int(entry[1])
+            if end <= start:
+                continue
+            start = max(0, start)
+            end = min(total_samples, end)
+            if end > start:
+                bounds.append((start, end))
+        bounds.sort(key=lambda pair: pair[0])
+        return bounds
 
     @staticmethod
     def _compute_target_run_bounds(sample_targets, atol=1e-6):

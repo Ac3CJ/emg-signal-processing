@@ -78,21 +78,7 @@ if errorlevel 1 (
 echo [OK] Connected to %PI_HOST%
 echo.
 
-echo [STEP 2] Syncing Code Files...
-echo =========================================
-scp ControllerConfiguration.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
-scp SignalReading.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
-scp SignalProcessing.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
-scp emg-shoulder-prosthetic-controller.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
-scp NeuralNetworkModels.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
-scp "%MODEL%" %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
-
-if exist current_participant.txt (
-    scp current_participant.txt %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
-)
-
-ssh %PI_USER%@%PI_HOST% "mkdir -p %PI_PROJECT_DIR%/biosignal_data/collected/raw %PI_PROJECT_DIR%/biosignal_data/collected/edited" > nul 2>&1
-
+REM ---- Resolve participant token up front (used by sync AND end-of-session pull) ----
 if not "%PARTICIPANT%"=="" (
     set PARTICIPANT_TOKEN=%PARTICIPANT%
     if /I "!PARTICIPANT_TOKEN:~0,1!"=="P" (
@@ -101,23 +87,42 @@ if not "%PARTICIPANT%"=="" (
         set PARTICIPANT_NUM=!PARTICIPANT_TOKEN!
         set PARTICIPANT_TOKEN=P!PARTICIPANT_TOKEN!
     )
-
-    ssh %PI_USER%@%PI_HOST% "printf '%s\n' '!PARTICIPANT_TOKEN!' > %PI_PROJECT_DIR%/current_participant.txt" > nul 2>&1
-
-    if exist "biosignal_data\collected\raw\!PARTICIPANT_TOKEN!M10.mat" (
-        scp "biosignal_data\collected\raw\!PARTICIPANT_TOKEN!M10.mat" %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/biosignal_data/collected/raw/ 2>nul
-    )
-    if exist "biosignal_data\collected\edited\!PARTICIPANT_TOKEN!M10_labelled.mat" (
-        scp "biosignal_data\collected\edited\!PARTICIPANT_TOKEN!M10_labelled.mat" %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/biosignal_data/collected/edited/ 2>nul
-    )
 )
-echo [OK] Code files synchronized
-echo.
 
 if "%SYNC_ONLY%"=="1" (
-    echo Sync complete. Exiting.
+    echo [STEP 2] Syncing Code Files...
+    echo =========================================
+    scp ControllerConfiguration.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
+    scp SignalReading.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
+    scp SignalProcessing.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
+    scp FileRepository.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
+    scp emg-shoulder-prosthetic-controller.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
+    scp NeuralNetworkModels.py %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
+    scp "%MODEL%" %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
+
+    if exist current_participant.txt (
+        scp current_participant.txt %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/ 2>nul
+    )
+
+    ssh %PI_USER%@%PI_HOST% "mkdir -p %PI_PROJECT_DIR%/biosignal_data/collected/raw %PI_PROJECT_DIR%/biosignal_data/collected/edited" > nul 2>&1
+
+    if not "%PARTICIPANT%"=="" (
+        ssh %PI_USER%@%PI_HOST% "printf '%s\n' '!PARTICIPANT_TOKEN!' > %PI_PROJECT_DIR%/current_participant.txt" > nul 2>&1
+
+        if exist "biosignal_data\collected\raw\!PARTICIPANT_TOKEN!M10.mat" (
+            scp "biosignal_data\collected\raw\!PARTICIPANT_TOKEN!M10.mat" %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/biosignal_data/collected/raw/ 2>nul
+        )
+        if exist "biosignal_data\collected\edited\!PARTICIPANT_TOKEN!M10_labelled.mat" (
+            scp "biosignal_data\collected\edited\!PARTICIPANT_TOKEN!M10_labelled.mat" %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/biosignal_data/collected/edited/ 2>nul
+        )
+    )
+    echo [OK] Code files synchronized
+    echo.
+    echo Sync complete. Run pi-deploy.bat without --sync to start a session.
     exit /b 0
 )
+echo [SKIP STEP 2] Code sync skipped (use --sync after code changes).
+echo.
 
 echo [STEP 3] Cleaning Up Previous Processes...
 echo =========================================
@@ -148,27 +153,38 @@ if not "%PARTICIPANT%"=="" set "CMD_ARGS=!CMD_ARGS! --participant %PARTICIPANT%"
 set "CMD_ARGS=!CMD_ARGS! --model %PI_PROJECT_DIR%/%MODEL%"
 
 echo Command: "%CMD_BASE% !CMD_ARGS!"
-echo Controller is running. Press Ctrl+C to stop gracefully.
+echo Controller is running. Type 'finish' (then Enter) in this window to end the session.
 echo.
 
-ssh %PI_USER%@%PI_HOST% "cd %PI_PROJECT_DIR% && !CMD_BASE! !CMD_ARGS!"
+REM -t allocates a pseudo-TTY so the local user can type 'finish' into the Pi's stdin
+ssh -t %PI_USER%@%PI_HOST% "cd %PI_PROJECT_DIR% && !CMD_BASE! !CMD_ARGS!"
 set EXIT_CODE=%errorlevel%
 
 echo.
 echo [STEP 5] Retrieving Collected Data...
 echo =========================================
 if "%COLLECT%"=="1" (
-    echo Pulling %COLLECTION_NAME%.mat from Raspberry Pi...
-    scp %PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/hardware_collections/%COLLECTION_NAME%.mat "%USERPROFILE%\Documents"
-    
-    if errorlevel 0 (
-        echo [OK] Successfully saved to your Windows Desktop!
+    if "%PARTICIPANT_TOKEN%"=="" (
+        echo [WARNING] No --participant supplied; cannot determine which P*M*.mat files to pull.
+        echo            Pass --participant ^<id^> to enable end-of-session retrieval.
     ) else (
-        echo [WARNING] Failed to pull the .mat file. You may need to transfer it manually.
+        echo Pulling !PARTICIPANT_TOKEN!M*.mat from Raspberry Pi to Desktop...
+        if not exist "%USERPROFILE%\Desktop\emg-collected" mkdir "%USERPROFILE%\Desktop\emg-collected" 2>nul
+        scp "%PI_USER%@%PI_HOST%:%PI_PROJECT_DIR%/biosignal_data/collected/raw/!PARTICIPANT_TOKEN!M*.mat" "%USERPROFILE%\Desktop\emg-collected\" 2>nul
+        if errorlevel 0 (
+            echo [OK] Files saved to %USERPROFILE%\Desktop\emg-collected\
+        ) else (
+            echo [WARNING] No files matched !PARTICIPANT_TOKEN!M*.mat or transfer failed.
+        )
     )
 ) else (
     echo No data collection requested. Skipping transfer.
 )
+
+echo.
+echo [STEP 6] Closing Leftover Pi Processes (incl. PyQt windows)...
+echo =========================================
+ssh %PI_USER%@%PI_HOST% "pkill -f 'python.*emg-shoulder-prosthetic-controller' 2>/dev/null || true; pkill -f 'pyqtgraph' 2>/dev/null || true; pkill -f 'QApplication' 2>/dev/null || true; echo '[Pi] Cleanup OK'"
 
 echo.
 echo =========================================
@@ -207,11 +223,17 @@ echo   --gui                            Enable GUI mode on Pi display
 echo   --display VALUE                  DISPLAY value for GUI mode (default: :0)
 echo.
 echo Utility options:
-echo   --sync                           Sync files only, do not execute
+echo   --sync                           Push code to Pi (run once after code changes), then exit
+echo                                    NOTE: Sessions no longer auto-sync. Run --sync only after
+echo                                          you change code locally; otherwise just launch a session.
 echo   --test-hardware                  Shortcut for --hardware --continuous
 echo   --shutdown                       Stop running remote controller
 echo   --reboot                         Reboot Raspberry Pi
 echo   --help                           Show this help message
+echo.
+echo Typical workflow:
+echo   pi-deploy.bat --sync                                  ^(once after code change^)
+echo   pi-deploy.bat --hardware --collect --participant P5   ^(many times during session^)
 echo.
 exit /b 0
 

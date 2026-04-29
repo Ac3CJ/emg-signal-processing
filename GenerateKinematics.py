@@ -443,7 +443,7 @@ def _visualise_secondary(
 if __name__ == "__main__":
     import sys
 
-    MODE = "batch_collected"   # Options: batch_collected | batch_secondary | single_collected | single_secondary
+    MODE = "batch_secondary"   # Options: batch_collected | batch_secondary | single_collected | single_secondary
 
     if MODE == "batch_collected":
         batch_generate_collected(show_plots=False)

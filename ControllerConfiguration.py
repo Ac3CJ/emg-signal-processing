@@ -19,8 +19,12 @@ INCREMENT = 20              # 20 ms step size
 SMOOTHING_ALPHA = 0.1       # Exponential moving average factor for kinematic output (0.0 to 1.0)
 WARMUP_SECONDS = 0.5        # Skip emitting predictions until this much real data has streamed in (online + offline).
 
-# Optional training mode: slice windows dynamically from continuous EMG arrays.
-# If disabled, training uses pre-windowed tensors (legacy behavior).
+# Controls the training windowing strategy.
+# True  → on-the-fly windowing via ContinuousEMGDataset (lower RAM, slower epochs).
+# False → pre-windowed path: all windows materialised into a (N, C, W) tensor before
+#         training begins (faster epochs, higher RAM — verify available RAM before enabling
+#         with large datasets; rule of thumb: N_windows × 8 channels × 100 samples × 4 bytes,
+#         e.g. 200k windows ≈ 640 MB, but full augmented datasets can reach several GB).
 ON_THE_FLY_WINDOW_SLICING = True
 ON_THE_FLY_WINDOW_SIZE = WINDOW_SIZE
 ON_THE_FLY_STEP_SIZE = INCREMENT
@@ -50,26 +54,26 @@ FILTER_ORDER = 4            # Butterworth filter order
 # 4. DATA AUGMENTATION HYPERPARAMETERS
 # ====================================================================================
 MIXUP_ALPHA = 0.2           # Alpha parameter for the Beta distribution (controls blend intensity)
-MIXUP_RATIO = 0.75           # Ratio of new mixup samples to generate (0.5 = dataset increases by 50%)
+MIXUP_RATIO = 1.0           # Ratio of new mixup samples to generate (0.5 = dataset increases by 50%)
 
 # White-noise augmentation applied BEFORE filtering in data-preparation pipelines.
 # Each value creates an additional full noisy copy of every trial across all channels.
 TRAINING_NOISE_MAGNITUDES = [0.000005, 0.00001]
 
 REST_MIXUP_ALPHA = 0.2           # Alpha parameter for the Beta distribution (controls blend intensity)
-REST_MIXUP_RATIO = 0.25           # Ratio of new mixup samples to generate (0.5 = dataset increases by 50%)
+REST_MIXUP_RATIO = 1.0           # Ratio of new mixup samples to generate (0.5 = dataset increases by 50%)
 
 # ====================================================================================
 # 5. NEURAL NETWORK TRAINING PARAMETERS
 # ====================================================================================
 EPOCHS = 150
-BATCH_SIZE = 256            # Reduced for 16GB RAM constraint (was 1280)
-GRADIENT_ACCUMULATION_STEPS = 2  # Accumulate 2 batches = effective batch of 1024 without RAM spike
+BATCH_SIZE = 512            # Reduced for 16GB RAM constraint (was 1280)
+GRADIENT_ACCUMULATION_STEPS = 1  # Accumulate 2 batches = effective batch of 1024 without RAM spike
 NUM_DATA_WORKERS = 1        # Reduced for RAM (was 4)
-PATIENCE = 20              # Early stopping patience
+PATIENCE = 5                # Early stopping patience
 LEARNING_RATE = 0.001
 LR_SCHEDULER_FACTOR = 0.5  # Reduce LR by this factor when plateau detected
-LR_SCHEDULER_PATIENCE = 5  # Wait this many epochs before reducing LR
+LR_SCHEDULER_PATIENCE = 2  # Wait this many epochs before reducing LR
 TEST_SPLIT = 0.2            # 20% of data used for validation
 PREFETCH_FACTOR = 1         # Reduced for RAM (was 2)
 
@@ -159,10 +163,10 @@ SECONDARY_BLACKLIST = [
     (6, 5),  # P6, M5: Defective Trapezius Ascendant
     (3, 6),  # P3, M6: FATAL - Flatline Trapezius Ascendant
     (4, 6),  # P4, M6: Noisy Serratus Anterior
-    (7, 6),  # P7, M6: FATAL - Flatline Trapezius Ascendant
-    (3, 7),  # P3, M7: FATAL - Flatline Trapezius Ascendant
-    (7, 7),  # P7, M7: FATAL - Flatline Trapezius Ascendant
-    (7, 8),  # P7, M8: FATAL - Flatline Trapezius Ascendant
+    #(7, 6),  # P7, M6: FATAL - Flatline Trapezius Ascendant
+    #(3, 7),  # P3, M7: FATAL - Flatline Trapezius Ascendant
+    #(7, 7),  # P7, M7: FATAL - Flatline Trapezius Ascendant
+    #(7, 8),  # P7, M8: FATAL - Flatline Trapezius Ascendant
 ]
 
 COLLECTED_BLACKLIST = [
@@ -170,7 +174,7 @@ COLLECTED_BLACKLIST = [
     # P5 — all trials corrupted (electrode misalignment across the session)
     (5, 1), (5, 2), (5, 3), (5, 4), (5, 5), (5, 6), (5, 7), (5, 8), (5, 9),
     # P8M4–P8M8 — electrodes drifted out of alignment mid-session
-    (8, 4), (8, 5), (8, 6), (8, 7), (8, 8),
+    (8, 2), (8, 3), (8, 4), (8, 5), (8, 6), (8, 7), (8, 8),
 ]
 
 # New CORRUPTED TRIALS identified during validation (added 2024-06-15, much worse than before)

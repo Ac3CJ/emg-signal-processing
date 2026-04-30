@@ -4,6 +4,7 @@ import argparse
 import os
 import csv
 import scipy.io
+import scipy.signal
 from sklearn.metrics import r2_score, mean_squared_error
 
 import SignalProcessing
@@ -200,6 +201,66 @@ def _compute_metrics(predictions, ground_truth):
     return metrics
 
 
+def _compute_latency_ms(predictions, ground_truth, movement_class, fs=None):
+    """Returns mean absolute kinematic latency in ms, or np.nan if not computable.
+
+    Signal: |Yaw| + |Pitch| in raw degrees (col 0 + col 1 of the DOF arrays).
+    Both GT and predicted are independently normalised to [0, 1] for peak detection only —
+    raw degree values are unchanged in all CSV and plot outputs.
+
+    M9 (rest) is excluded because the combined signal carries no contraction peaks.
+    M10 (MVC) does not reach this function in any current validation loop, but is
+    excluded by convention here for safety.
+    # NOTE: M10 files exist on disk but are not in TARGET_MAPPING and are skipped by
+    # all validation loops before this function is called.
+
+    Args:
+        predictions: (n_windows, n_dofs) array in degrees.
+        ground_truth: (n_windows, n_dofs) array in degrees.
+        movement_class: integer movement label (1–9).
+        fs: sampling rate in Hz (defaults to Config.FS).
+
+    Returns:
+        float: mean(|t_pred - t_GT|) in ms, or np.nan if fewer than 1 matched pair.
+    """
+    if movement_class in (9, 10):
+        return np.nan
+
+    if fs is None:
+        fs = float(Config.FS)
+
+    step_ms = (Config.INCREMENT / fs) * 1000.0
+
+    gt_signal = np.abs(ground_truth[:, 0]) + np.abs(ground_truth[:, 1])
+    pred_signal = np.abs(predictions[:, 0]) + np.abs(predictions[:, 1])
+
+    def _normalise(sig):
+        sig_min, sig_max = sig.min(), sig.max()
+        span = sig_max - sig_min
+        if span < 1e-9:
+            return np.zeros_like(sig)
+        return (sig - sig_min) / span
+
+    gt_norm = _normalise(gt_signal)
+    pred_norm = _normalise(pred_signal)
+
+    # TODO: review prominence — initial value 0.2 chosen conservatively; adjust after
+    # inspecting find_peaks output on real trial data.
+    gt_peaks, _ = scipy.signal.find_peaks(gt_norm, height=0.9, distance=3000, prominence=0.2)
+    pred_peaks, _ = scipy.signal.find_peaks(pred_norm, height=0.9, distance=3000, prominence=0.2)
+
+    if len(gt_peaks) == 0 or len(pred_peaks) == 0:
+        return np.nan
+
+    # 1-to-1 matching: for each GT peak find the nearest predicted peak by index.
+    latencies = []
+    for gt_idx in gt_peaks:
+        nearest = pred_peaks[np.argmin(np.abs(pred_peaks - gt_idx))]
+        latencies.append(abs(int(nearest) - int(gt_idx)) * step_ms)
+
+    return float(np.mean(latencies))
+
+
 def _save_predictions_csv(output_dir, trial_name, predictions, ground_truth, time_axis):
     """Saves per-window predictions (and ground truth when available) to a CSV."""
     os.makedirs(output_dir, exist_ok=True)
@@ -249,16 +310,22 @@ def _maybe_plot_trial(plot, model_name, participant, movement, data_type=None):
 
 
 def _metrics_row(trial_name, metrics):
+    latency = metrics.get('mean_abs_latency_ms', np.nan)
+    latency_str = f'{latency:.2f}' if not np.isnan(latency) else 'NaN'
     return ([trial_name]
             + [f'{metrics[f"{d}_r2"]:.4f}' for d in DOF_NAMES]
-            + [f'{metrics[f"{d}_rmse"]:.4f}' for d in DOF_NAMES])
+            + [f'{metrics[f"{d}_rmse"]:.4f}' for d in DOF_NAMES]
+            + [latency_str])
 
 
 def _save_per_trial_metrics_csv(output_dir, trial_name, metrics):
-    """Writes a single-row R²/RMSE CSV for one trial: <trial_name>_metrics.csv."""
+    """Writes a single-row R²/RMSE/latency CSV for one trial: <trial_name>_metrics.csv."""
     os.makedirs(output_dir, exist_ok=True)
     path = os.path.join(output_dir, f"{trial_name}_metrics.csv")
-    header = ['trial'] + [f'{d}_r2' for d in DOF_NAMES] + [f'{d}_rmse' for d in DOF_NAMES]
+    header = (['trial']
+              + [f'{d}_r2' for d in DOF_NAMES]
+              + [f'{d}_rmse' for d in DOF_NAMES]
+              + ['mean_abs_latency_ms'])
     with open(path, 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(header)
@@ -270,7 +337,10 @@ def _save_metrics_csv(output_dir, file_stem, all_metrics_rows):
     """Writes accumulated per-trial metric rows to <file_stem>.csv."""
     os.makedirs(output_dir, exist_ok=True)
     path = os.path.join(output_dir, f"{file_stem}.csv")
-    header = ['trial'] + [f'{d}_r2' for d in DOF_NAMES] + [f'{d}_rmse' for d in DOF_NAMES]
+    header = (['trial']
+              + [f'{d}_r2' for d in DOF_NAMES]
+              + [f'{d}_rmse' for d in DOF_NAMES]
+              + ['mean_abs_latency_ms'])
     with open(path, 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(header)
@@ -366,6 +436,7 @@ def run_collected_validation(model_path, participant_num, base_path=Config.COLLE
 
         if ground_truth is not None:
             metrics = _compute_metrics(predictions, ground_truth)
+            metrics['mean_abs_latency_ms'] = _compute_latency_ms(predictions, ground_truth, m)
             all_metrics_rows.append(_metrics_row(trial_name, metrics))
             _save_per_trial_metrics_csv(output_dir, trial_name, metrics)
             print(f"     R² — " + "  ".join(f"{d}: {metrics[f'{d}_r2']:.3f}" for d in DOF_NAMES))
@@ -431,6 +502,7 @@ def run_benchmark_validation(model_path, output_dir, base_path=Config.COLLECTED_
 
             if ground_truth is not None:
                 metrics = _compute_metrics(predictions, ground_truth)
+                metrics['mean_abs_latency_ms'] = _compute_latency_ms(predictions, ground_truth, m)
                 all_metrics_rows.append(_metrics_row(trial_name, metrics))
                 _save_per_trial_metrics_csv(output_dir, trial_name, metrics)
                 print(f"     R² — " + "  ".join(f"{d}: {metrics[f'{d}_r2']:.3f}" for d in DOF_NAMES))
@@ -506,6 +578,7 @@ def run_fast_validation(model_path, sim_file=None, predefined=False, base_path='
 
         if ground_truth is not None:
             metrics = _compute_metrics(predictions, ground_truth)
+            metrics['mean_abs_latency_ms'] = _compute_latency_ms(predictions, ground_truth, movement_class)
             all_metrics_rows.append(_metrics_row(trial_name, metrics))
             _save_per_trial_metrics_csv(output_dir, trial_name, metrics)
             print(f"     R² — " + "  ".join(f"{d}: {metrics[f'{d}_r2']:.3f}" for d in DOF_NAMES))
@@ -581,6 +654,7 @@ def run_all_validation(model_path, output_dir='validation-csv', plot=False, mode
 
             if ground_truth is not None:
                 metrics = _compute_metrics(predictions, ground_truth)
+                metrics['mean_abs_latency_ms'] = _compute_latency_ms(predictions, ground_truth, selection.movement)
                 all_metrics_rows.append(_metrics_row(trial_name, metrics))
                 _save_per_trial_metrics_csv(output_dir, trial_name, metrics)
                 print(f"     R² — " + "  ".join(f"{d}: {metrics[f'{d}_r2']:.3f}" for d in DOF_NAMES))

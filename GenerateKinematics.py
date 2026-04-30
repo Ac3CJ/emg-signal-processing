@@ -64,10 +64,10 @@ DOF_COLOURS = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
 # ---------------------------------------------------------------------------
 
 def _primary_scalar_target(movement: int) -> float:
-    """Scalar clamping target for secondary 1-D kinematic (angolospalla).
+    """Scalar rescaling target for secondary 1-D kinematic (angolospalla).
 
     Returns the first non-zero DOF target value, preserving sign so that
-    hyperextension (negative target) clamps correctly.
+    hyperextension (negative target) rescales with inverted direction.
     """
     target_vec = Config.TARGET_MAPPING.get(movement, [0.0, 0.0, 0.0, 0.0])
     for v in target_vec:
@@ -239,7 +239,7 @@ def process_secondary_kinematics(
     show_plot: bool = False,
     save_plot: Optional[str] = None,
 ) -> Optional[str]:
-    """Clamp secondary angolospalla to the valid range and save as _edit.mat.
+    """Rescale secondary angolospalla onto the valid range and save as _edit.mat.
 
     Returns the output path on success, None on skip/error.
     """
@@ -263,7 +263,26 @@ def process_secondary_kinematics(
     scalar_target = _primary_scalar_target(movement)
     lo = min(0.0, scalar_target)
     hi = max(0.0, scalar_target)
-    clamped = np.clip(original, lo, hi)
+
+    orig_min = original.min()
+    orig_max = original.max()
+
+    if orig_max == orig_min:
+        # Degenerate (flat) signal — hold at rest bound.
+        rescaled = np.full(len(original), lo, dtype=np.float64)
+    else:
+        norm = (original - orig_min) / (orig_max - orig_min)
+        # TODO: if QA plots show outlier-driven distortion on any subject, revisit
+        #       using robust percentile-based bounds (e.g. 1st/99th) instead of
+        #       whole-signal min/max, which can be pulled by noise spikes.
+        if scalar_target < 0:
+            # Hyperextension (e.g. M4, target = −30°):
+            # orig_min → hi (0°), orig_max → lo (−30°) — invert direction.
+            rescaled = hi - norm * (hi - lo)
+        else:
+            # Normal (positive target):
+            # orig_min → lo (0°), orig_max → hi (target°).
+            rescaled = lo + norm * (hi - lo)
 
     out_dir = os.path.join(REPO.edited_root("secondary"), f"Soggetto{participant}")
     os.makedirs(out_dir, exist_ok=True)
@@ -272,19 +291,19 @@ def process_secondary_kinematics(
     out_path = os.path.join(out_dir, f"{src_stem}_edit.mat")
 
     payload = {k: v for k, v in mat.items() if not str(k).startswith("__")}
-    payload["angolospalla"] = clamped.reshape(-1, 1)
+    payload["angolospalla"] = rescaled.reshape(-1, 1)
     payload["angolospalla_original"] = original.reshape(-1, 1)
     scipy.io.savemat(out_path, payload)
 
-    n_clamped = int(np.sum(original != clamped))
+    n_adjusted = int(np.sum(original != rescaled))
     print(
         f"  [SAVED] S{participant} M{movement} → {os.path.basename(out_path)}  "
-        f"original [{original.min():.1f}°, {original.max():.1f}°] → "
-        f"clamped [{lo:.1f}°, {hi:.1f}°]  ({n_clamped} samples adjusted)"
+        f"original [{orig_min:.1f}°, {orig_max:.1f}°] → "
+        f"rescaled [{lo:.1f}°, {hi:.1f}°]  ({n_adjusted} samples adjusted)"
     )
 
     if show_plot or save_plot:
-        _visualise_secondary(original, clamped, participant, movement, lo, hi, show_plot, save_plot)
+        _visualise_secondary(original, rescaled, participant, movement, lo, hi, show_plot, save_plot)
 
     return out_path
 
@@ -402,7 +421,7 @@ def _visualise_collected(
 
 def _visualise_secondary(
     original: np.ndarray,
-    clamped: np.ndarray,
+    rescaled: np.ndarray,
     participant: int,
     movement: int,
     lo: float,
@@ -410,12 +429,12 @@ def _visualise_secondary(
     show: bool,
     save_path: Optional[str],
 ) -> None:
-    """Single-panel figure showing original vs clamped secondary kinematic."""
+    """Single-panel figure showing original vs rescaled secondary kinematic."""
     sample_axis = np.arange(len(original))
 
     fig, ax = plt.subplots(figsize=(14, 4))
     ax.plot(sample_axis, original, color="steelblue", linewidth=0.7, alpha=0.8, label="Original")
-    ax.plot(sample_axis, clamped, color="tab:orange", linewidth=1.0, label=f"Clamped [{lo:.0f}°, {hi:.0f}°]")
+    ax.plot(sample_axis, rescaled, color="tab:orange", linewidth=1.0, label=f"Rescaled [{lo:.0f}°, {hi:.0f}°]")
     ax.axhline(lo, color="red", linestyle="--", linewidth=0.8, alpha=0.6, label=f"Lo = {lo:.0f}°")
     ax.axhline(hi, color="green", linestyle="--", linewidth=0.8, alpha=0.6, label=f"Hi = {hi:.0f}°")
     ax.set_xlabel("Kinematic sample index")
@@ -458,7 +477,7 @@ if __name__ == "__main__":
 
     elif MODE == "single_secondary":
         # Quick QA: range-correct one file and show the comparison plot
-        P, M = 1, 1
+        P, M = 8, 1
         process_secondary_kinematics(P, M, show_plot=True)
 
     else:

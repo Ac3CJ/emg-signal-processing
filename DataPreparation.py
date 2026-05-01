@@ -612,7 +612,6 @@ def load_and_prepare_dataset(
 		expanded_kin = []
 		expanded_classes = []
 		expanded_minmax = []
-		mw_sigmas = (0.25, 0.40)
 		noise_magnitudes = _resolve_training_noise_magnitudes() if include_noise_aug else []
 
 		for emg_b, kin_b, cls, mm in zip(all_emg_bursts, all_kin_bursts, classes_only, minmax_lookup):
@@ -620,12 +619,6 @@ def load_and_prepare_dataset(
 			expanded_kin.append(np.asarray(kin_b, dtype=np.float32))
 			expanded_classes.append(cls)
 			expanded_minmax.append(mm)
-
-			for sigma in mw_sigmas:
-				expanded_emg.append(apply_magnitude_warping(emg_b, sigma=sigma))
-				expanded_kin.append(np.asarray(kin_b, dtype=np.float32))
-				expanded_classes.append(cls)
-				expanded_minmax.append(mm)
 
 			for mag in noise_magnitudes:
 				expanded_emg.append(_inject_white_noise_to_burst(emg_b, [mag]))
@@ -646,6 +639,17 @@ def load_and_prepare_dataset(
 		_filter_and_normalize_burst(emg_b, mm)
 		for emg_b, mm in zip(all_emg_bursts, minmax_lookup)
 	]
+
+	if augment:
+		mw_filtered, mw_kin, mw_classes = [], [], []
+		for filt_b, kin_b, cls in zip(filtered_emg, all_kin_bursts, classes_only):
+			mw_filtered.append(filt_b)
+			mw_kin.append(kin_b)
+			mw_classes.append(cls)
+			mw_filtered.append(np.clip(apply_magnitude_warping(filt_b, sigma=0.1), 0.0, 1.0))
+			mw_kin.append(np.asarray(kin_b, dtype=np.float32))
+			mw_classes.append(cls)
+		filtered_emg, all_kin_bursts, classes_only = mw_filtered, mw_kin, mw_classes
 
 	if should_shuffle_segment_blocks:
 		_shuffle_segment_lists_in_place(filtered_emg, all_kin_bursts, classes_only, block_shuffle_rng)
@@ -870,7 +874,6 @@ def load_collected_data(
 		print(f"  [Augmentation] Mixup: {original_count} → {len(all_emg_bursts)} bursts")
 
 	if augment:
-		mw_sigmas = (0.25, 0.40)
 		noise_magnitudes = _resolve_training_noise_magnitudes() if include_noise_aug else []
 		expanded_emg = []
 		expanded_kin = []
@@ -882,12 +885,6 @@ def load_collected_data(
 			expanded_kin.append(np.asarray(kin_b, dtype=np.float32))
 			expanded_classes.append(cls)
 			expanded_minmax.append(mm)
-
-			for sigma in mw_sigmas:
-				expanded_emg.append(apply_magnitude_warping(emg_b, sigma=sigma))
-				expanded_kin.append(np.asarray(kin_b, dtype=np.float32))
-				expanded_classes.append(cls)
-				expanded_minmax.append(mm)
 
 			for mag in noise_magnitudes:
 				expanded_emg.append(_inject_white_noise_to_burst(emg_b, [mag]))
@@ -906,6 +903,17 @@ def load_collected_data(
 		_filter_and_normalize_burst(emg_b, mm)
 		for emg_b, mm in zip(all_emg_bursts, per_burst_minmax)
 	]
+
+	if augment:
+		mw_filtered, mw_kin, mw_classes = [], [], []
+		for filt_b, kin_b, cls in zip(filtered_emg, all_kin_bursts, all_classes):
+			mw_filtered.append(filt_b)
+			mw_kin.append(kin_b)
+			mw_classes.append(cls)
+			mw_filtered.append(np.clip(apply_magnitude_warping(filt_b, sigma=0.1), 0.0, 1.0))
+			mw_kin.append(np.asarray(kin_b, dtype=np.float32))
+			mw_classes.append(cls)
+		filtered_emg, all_kin_bursts, all_classes = mw_filtered, mw_kin, mw_classes
 
 	if should_shuffle_segment_blocks:
 		_shuffle_segment_lists_in_place(filtered_emg, all_kin_bursts, all_classes, block_shuffle_rng)

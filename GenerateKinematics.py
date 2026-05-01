@@ -325,10 +325,10 @@ def batch_generate_collected(
     for p in participants:
         print(f"\n  Participant P{p}:")
         for m in REPO.discover_movements("collected", p):
-            if hasattr(Config, "COLLECTED_BLACKLIST") and (p, m) in Config.COLLECTED_BLACKLIST:
-                print(f"  [SKIP] P{p}M{m}: blacklisted")
-                n_skip += 1
-                continue
+            # if hasattr(Config, "COLLECTED_BLACKLIST") and (p, m) in Config.COLLECTED_BLACKLIST:
+            #     print(f"  [SKIP] P{p}M{m}: blacklisted")
+            #     n_skip += 1
+            #     continue
             result = generate_collected_kinematics(p, m, show_plot=show_plots)
             if result:
                 n_ok += 1
@@ -351,10 +351,10 @@ def batch_process_secondary(
     for p in participants:
         print(f"\n  Soggetto{p}:")
         for m in REPO.discover_movements("secondary", p):
-            if hasattr(Config, "SECONDARY_BLACKLIST") and (p, m) in Config.SECONDARY_BLACKLIST:
-                print(f"  [SKIP] S{p} M{m}: blacklisted")
-                n_skip += 1
-                continue
+            # if hasattr(Config, "SECONDARY_BLACKLIST") and (p, m) in Config.SECONDARY_BLACKLIST:
+            #     print(f"  [SKIP] S{p} M{m}: blacklisted")
+            #     n_skip += 1
+            #     continue
             result = process_secondary_kinematics(p, m, show_plot=show_plots)
             if result:
                 n_ok += 1

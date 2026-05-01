@@ -54,19 +54,19 @@ FILTER_ORDER = 4            # Butterworth filter order
 # 4. DATA AUGMENTATION HYPERPARAMETERS
 # ====================================================================================
 MIXUP_ALPHA = 0.2           # Alpha parameter for the Beta distribution (controls blend intensity)
-MIXUP_RATIO = 1.0           # Ratio of new mixup samples to generate (0.5 = dataset increases by 50%)
+MIXUP_RATIO = 0.75           # Ratio of new mixup samples to generate (0.5 = dataset increases by 50%)
 
 # White-noise augmentation applied BEFORE filtering in data-preparation pipelines.
 # Each value creates an additional full noisy copy of every trial across all channels.
 TRAINING_NOISE_MAGNITUDES = [0.000005, 0.00001]
 
 REST_MIXUP_ALPHA = 0.2           # Alpha parameter for the Beta distribution (controls blend intensity)
-REST_MIXUP_RATIO = 1.0           # Ratio of new mixup samples to generate (0.5 = dataset increases by 50%)
+REST_MIXUP_RATIO = 0.5           # Ratio of new mixup samples to generate (0.5 = dataset increases by 50%)
 
 # ====================================================================================
 # 5. NEURAL NETWORK TRAINING PARAMETERS
 # ====================================================================================
-EPOCHS = 150
+EPOCHS = 50
 BATCH_SIZE = 512            # Reduced for 16GB RAM constraint (was 1280)
 GRADIENT_ACCUMULATION_STEPS = 1  # Accumulate 2 batches = effective batch of 1024 without RAM spike
 NUM_DATA_WORKERS = 1        # Reduced for RAM (was 4)

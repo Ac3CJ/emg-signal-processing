@@ -4,6 +4,7 @@ import argparse
 import os
 import csv
 import scipy.io
+import scipy.ndimage
 import scipy.signal
 from sklearn.metrics import r2_score, mean_squared_error
 
@@ -201,14 +202,36 @@ def _compute_metrics(predictions, ground_truth):
     return metrics
 
 
+def _detect_rising_edge_tops(sig_norm, low_thresh=0.2, high_thresh=0.7):
+    """Schmitt-trigger rising-edge detector.
+
+    Returns indices where `sig_norm` first crosses high_thresh after having been below
+    low_thresh — i.e. the top of each rising edge. The state machine prevents re-triggering
+    inside a plateau, so no minimum-distance parameter is needed.
+    """
+    if len(sig_norm) == 0:
+        return np.array([], dtype=int)
+    edges = []
+    state = 'high' if sig_norm[0] >= low_thresh else 'low'
+    for i in range(1, len(sig_norm)):
+        v = sig_norm[i]
+        if state == 'low' and v >= high_thresh:
+            edges.append(i)
+            state = 'high'
+        elif state == 'high' and v < low_thresh:
+            state = 'low'
+    return np.array(edges, dtype=int)
+
+
 def _compute_latency_ms(predictions, ground_truth, movement_class, fs=None):
     """Returns mean absolute kinematic latency in ms, or np.nan if not computable.
 
-    Signal: |Yaw| + |Pitch| in raw degrees (col 0 + col 1 of the DOF arrays).
-    Both GT and predicted are independently normalised to [0, 1] for peak detection only —
-    raw degree values are unchanged in all CSV and plot outputs.
+    Signal: |Yaw| + |Pitch| in raw degrees (col 0 + col 1 of the DOF arrays). Each signal is
+    smoothed (~200 ms moving average) and independently min-max normalised, then a Schmitt
+    trigger picks the first sample of every plateau (the top of each rising edge). Latency is
+    the mean absolute index difference between matched GT/pred plateau-tops, in ms.
 
-    M9 (rest) is excluded because the combined signal carries no contraction peaks.
+    M9 (rest) is excluded because the combined signal carries no contraction plateaus.
     M10 (MVC) does not reach this function in any current validation loop, but is
     excluded by convention here for safety.
     # NOTE: M10 files exist on disk but are not in TARGET_MAPPING and are skipped by
@@ -234,6 +257,10 @@ def _compute_latency_ms(predictions, ground_truth, movement_class, fs=None):
     gt_signal = np.abs(ground_truth[:, 0]) + np.abs(ground_truth[:, 1])
     pred_signal = np.abs(predictions[:, 0]) + np.abs(predictions[:, 1])
 
+    smoothing_window = max(3, int(round(200.0 / step_ms)))
+    gt_smoothed = scipy.ndimage.uniform_filter1d(gt_signal, size=smoothing_window, mode='nearest')
+    pred_smoothed = scipy.ndimage.uniform_filter1d(pred_signal, size=smoothing_window, mode='nearest')
+
     def _normalise(sig):
         sig_min, sig_max = sig.min(), sig.max()
         span = sig_max - sig_min
@@ -241,18 +268,15 @@ def _compute_latency_ms(predictions, ground_truth, movement_class, fs=None):
             return np.zeros_like(sig)
         return (sig - sig_min) / span
 
-    gt_norm = _normalise(gt_signal)
-    pred_norm = _normalise(pred_signal)
+    gt_norm = _normalise(gt_smoothed)
+    pred_norm = _normalise(pred_smoothed)
 
-    # TODO: review prominence — initial value 0.2 chosen conservatively; adjust after
-    # inspecting find_peaks output on real trial data.
-    gt_peaks, _ = scipy.signal.find_peaks(gt_norm, height=0.9, distance=3000, prominence=0.2)
-    pred_peaks, _ = scipy.signal.find_peaks(pred_norm, height=0.9, distance=3000, prominence=0.2)
+    gt_peaks = _detect_rising_edge_tops(gt_norm)
+    pred_peaks = _detect_rising_edge_tops(pred_norm)
 
     if len(gt_peaks) == 0 or len(pred_peaks) == 0:
         return np.nan
 
-    # 1-to-1 matching: for each GT peak find the nearest predicted peak by index.
     latencies = []
     for gt_idx in gt_peaks:
         nearest = pred_peaks[np.argmin(np.abs(pred_peaks - gt_idx))]

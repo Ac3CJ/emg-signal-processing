@@ -19,7 +19,7 @@ NUM_OUTPUTS = 4             # Output DOFs: [Yaw, Pitch, Roll, Elbow]
 
 
 WINDOW_SIZE = 100           # GOOD: 100 ms window size
-INCREMENT = 20              # GOOD: 20 ms step size
+INCREMENT = 15              # GOOD: 15 ms step size
 SMOOTHING_ALPHA = 0.1       # Exponential moving average factor for kinematic output (0.0 to 1.0)
 WARMUP_SECONDS = 0.5        # Skip emitting predictions until this much real data has streamed in (online + offline).
 

@@ -206,7 +206,7 @@ def _run_experiment(run_name, config_overrides=None, filter_fn_override=None):
 
 # Window step ablation: 100 ms window fixed, step varies
 STEP_ABLATION = [
-    ('step_20ms',  {},                                                                   None),
+    ('step_20ms',  {'INCREMENT': 20,  'ON_THE_FLY_STEP_SIZE': 20},                  None),
     ('step_10ms',  {'INCREMENT': 10,  'ON_THE_FLY_STEP_SIZE': 10},                      None),
     ('step_4ms', {'INCREMENT': 4, 'ON_THE_FLY_STEP_SIZE': 4},                     None),
     ('step_15ms',  {'INCREMENT': 15,  'ON_THE_FLY_STEP_SIZE': 15},                      None),

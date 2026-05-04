@@ -14,8 +14,12 @@ NUM_OUTPUTS = 4             # Output DOFs: [Yaw, Pitch, Roll, Elbow]
 # ====================================================================================
 # 2. SLIDING WINDOW & REAL-TIME CONSTRAINTS
 # ====================================================================================
-WINDOW_SIZE = 100           # 100 ms window size
-INCREMENT = 20              # 20 ms step size
+# Original WINDOW_SIZE_MS = 500, INCREMENT = 62 (This is in milliseconds)
+# Multiplier factor 62/500 = 0.124
+
+
+WINDOW_SIZE = 100           # GOOD: 100 ms window size
+INCREMENT = 20              # GOOD: 20 ms step size
 SMOOTHING_ALPHA = 0.1       # Exponential moving average factor for kinematic output (0.0 to 1.0)
 WARMUP_SECONDS = 0.5        # Skip emitting predictions until this much real data has streamed in (online + offline).
 
@@ -63,6 +67,8 @@ TRAINING_NOISE_MAGNITUDES = [0.000005, 0.00001]
 REST_MIXUP_ALPHA = 0.2           # Alpha parameter for the Beta distribution (controls blend intensity)
 REST_MIXUP_RATIO = 0.5           # Ratio of new mixup samples to generate (0.5 = dataset increases by 50%)
 
+ENABLE_MAGNITUDE_WARPING = True  # Set False in ablation studies to isolate other augmentation effects
+
 # ====================================================================================
 # 5. NEURAL NETWORK TRAINING PARAMETERS
 # ====================================================================================
@@ -70,10 +76,10 @@ EPOCHS = 50
 BATCH_SIZE = 512            # Reduced for 16GB RAM constraint (was 1280)
 GRADIENT_ACCUMULATION_STEPS = 1  # Accumulate 2 batches = effective batch of 1024 without RAM spike
 NUM_DATA_WORKERS = 1        # Reduced for RAM (was 4)
-PATIENCE = 5                # Early stopping patience
+PATIENCE = 10               # Early stopping patience
 LEARNING_RATE = 0.001
 LR_SCHEDULER_FACTOR = 0.5  # Reduce LR by this factor when plateau detected
-LR_SCHEDULER_PATIENCE = 2  # Wait this many epochs before reducing LR
+LR_SCHEDULER_PATIENCE = 5  # Wait this many epochs before reducing LR
 TEST_SPLIT = 0.2            # 20% of data used for validation
 PREFETCH_FACTOR = 1         # Reduced for RAM (was 2)
 

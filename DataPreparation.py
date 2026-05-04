@@ -640,7 +640,7 @@ def load_and_prepare_dataset(
 		for emg_b, mm in zip(all_emg_bursts, minmax_lookup)
 	]
 
-	if augment:
+	if augment and getattr(Config, 'ENABLE_MAGNITUDE_WARPING', True):
 		mw_filtered, mw_kin, mw_classes = [], [], []
 		for filt_b, kin_b, cls in zip(filtered_emg, all_kin_bursts, classes_only):
 			mw_filtered.append(filt_b)
@@ -904,7 +904,7 @@ def load_collected_data(
 		for emg_b, mm in zip(all_emg_bursts, per_burst_minmax)
 	]
 
-	if augment:
+	if augment and getattr(Config, 'ENABLE_MAGNITUDE_WARPING', True):
 		mw_filtered, mw_kin, mw_classes = [], [], []
 		for filt_b, kin_b, cls in zip(filtered_emg, all_kin_bursts, all_classes):
 			mw_filtered.append(filt_b)

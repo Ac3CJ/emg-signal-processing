@@ -173,6 +173,22 @@ def _average_metrics(rows):
     return averages
 
 
+def _iqr_metrics(rows):
+    if not rows:
+        return {f'{k}_iqr': np.nan for k in METRIC_COLUMNS}
+
+    iqrs = {}
+    for key in METRIC_COLUMNS:
+        values = [r.get(key, np.nan) for r in rows]
+        valid = [v for v in values if not np.isnan(v)]
+        if len(valid) >= 2:
+            q75, q25 = np.percentile(valid, [75, 25])
+            iqrs[f'{key}_iqr'] = float(q75 - q25)
+        else:
+            iqrs[f'{key}_iqr'] = np.nan
+    return iqrs
+
+
 def _format_value(key, value):
     if value is None or np.isnan(value):
         return 'NaN'
@@ -188,25 +204,105 @@ def _summarize_run(run_name, rows, collected_benchmark, secondary_benchmark):
     secondary_bench = list(_filter_rows(rows, data_type='s', participants=secondary_benchmark))
     overall_rows = collected_rows + secondary_rows
 
-    summaries = {
-        'collected': _average_metrics(collected_rows),
-        'secondary': _average_metrics(secondary_rows),
-        'collected_benchmark': _average_metrics(collected_bench),
-        'secondary_benchmark': _average_metrics(secondary_bench),
-        'overall': _average_metrics(overall_rows),
+    category_rows = {
+        'collected': collected_rows,
+        'secondary': secondary_rows,
+        'collected_benchmark': collected_bench,
+        'secondary_benchmark': secondary_bench,
+        'overall': overall_rows,
     }
 
     row = {'test_name': run_name}
     for category in CATEGORY_ORDER:
+        cat_rows = category_rows[category]
+        avgs = _average_metrics(cat_rows)
+        iqrs = _iqr_metrics(cat_rows)
+
         for key in METRIC_COLUMNS:
-            row[f'{category}_{key}'] = summaries[category].get(key, np.nan)
-        yaw_r2 = summaries[category].get('Yaw_r2', np.nan)
-        pitch_r2 = summaries[category].get('Pitch_r2', np.nan)
-        yaw_rmse = summaries[category].get('Yaw_rmse', np.nan)
-        pitch_rmse = summaries[category].get('Pitch_rmse', np.nan)
+            row[f'{category}_{key}'] = avgs.get(key, np.nan)
+
+        yaw_r2 = avgs.get('Yaw_r2', np.nan)
+        pitch_r2 = avgs.get('Pitch_r2', np.nan)
+        yaw_rmse = avgs.get('Yaw_rmse', np.nan)
+        pitch_rmse = avgs.get('Pitch_rmse', np.nan)
         row[f'{category}_avg_r2'] = float(np.nanmean([yaw_r2, pitch_r2])) if not np.isnan(yaw_r2) or not np.isnan(pitch_r2) else np.nan
         row[f'{category}_avg_rmse'] = float(np.nanmean([yaw_rmse, pitch_rmse])) if not np.isnan(yaw_rmse) or not np.isnan(pitch_rmse) else np.nan
+
+        for key in METRIC_COLUMNS:
+            row[f'{category}_{key}_iqr'] = iqrs.get(f'{key}_iqr', np.nan)
+
+        if cat_rows:
+            per_trial_avg_r2 = [float(np.nanmean([r.get('Yaw_r2', np.nan), r.get('Pitch_r2', np.nan)])) for r in cat_rows]
+            per_trial_avg_rmse = [float(np.nanmean([r.get('Yaw_rmse', np.nan), r.get('Pitch_rmse', np.nan)])) for r in cat_rows]
+            valid_r2 = [v for v in per_trial_avg_r2 if not np.isnan(v)]
+            valid_rmse = [v for v in per_trial_avg_rmse if not np.isnan(v)]
+            row[f'{category}_avg_r2_iqr'] = float(np.percentile(valid_r2, 75) - np.percentile(valid_r2, 25)) if len(valid_r2) >= 2 else np.nan
+            row[f'{category}_avg_rmse_iqr'] = float(np.percentile(valid_rmse, 75) - np.percentile(valid_rmse, 25)) if len(valid_rmse) >= 2 else np.nan
+        else:
+            row[f'{category}_avg_r2_iqr'] = np.nan
+            row[f'{category}_avg_rmse_iqr'] = np.nan
+
     return row
+
+
+def _summarize_run_movement(run_name, rows, collected_benchmark, secondary_benchmark):
+    by_movement = {}
+    for row in rows:
+        parsed = _parse_trial_name(row.get('trial', ''))
+        if parsed is None:
+            continue
+        _, _, movement = parsed
+        by_movement.setdefault(movement, []).append(row)
+
+    result = []
+    for movement in sorted(by_movement):
+        movement_rows = by_movement[movement]
+        collected_rows = list(_filter_rows(movement_rows, data_type='c'))
+        secondary_rows = list(_filter_rows(movement_rows, data_type='s'))
+        collected_bench = list(_filter_rows(movement_rows, data_type='c', participants=collected_benchmark))
+        secondary_bench = list(_filter_rows(movement_rows, data_type='s', participants=secondary_benchmark))
+
+        category_rows = {
+            'collected': collected_rows,
+            'secondary': secondary_rows,
+            'collected_benchmark': collected_bench,
+            'secondary_benchmark': secondary_bench,
+            'overall': movement_rows,
+        }
+
+        mov_row = {'test_name': run_name, 'movement': movement}
+        for category in CATEGORY_ORDER:
+            cat_rows = category_rows[category]
+            avgs = _average_metrics(cat_rows)
+            iqrs = _iqr_metrics(cat_rows)
+
+            for key in METRIC_COLUMNS:
+                mov_row[f'{category}_{key}'] = avgs.get(key, np.nan)
+
+            yaw_r2 = avgs.get('Yaw_r2', np.nan)
+            pitch_r2 = avgs.get('Pitch_r2', np.nan)
+            yaw_rmse = avgs.get('Yaw_rmse', np.nan)
+            pitch_rmse = avgs.get('Pitch_rmse', np.nan)
+            mov_row[f'{category}_avg_r2'] = float(np.nanmean([yaw_r2, pitch_r2])) if not np.isnan(yaw_r2) or not np.isnan(pitch_r2) else np.nan
+            mov_row[f'{category}_avg_rmse'] = float(np.nanmean([yaw_rmse, pitch_rmse])) if not np.isnan(yaw_rmse) or not np.isnan(pitch_rmse) else np.nan
+
+            for key in METRIC_COLUMNS:
+                mov_row[f'{category}_{key}_iqr'] = iqrs.get(f'{key}_iqr', np.nan)
+
+            if cat_rows:
+                per_trial_avg_r2 = [float(np.nanmean([r.get('Yaw_r2', np.nan), r.get('Pitch_r2', np.nan)])) for r in cat_rows]
+                per_trial_avg_rmse = [float(np.nanmean([r.get('Yaw_rmse', np.nan), r.get('Pitch_rmse', np.nan)])) for r in cat_rows]
+                valid_r2 = [v for v in per_trial_avg_r2 if not np.isnan(v)]
+                valid_rmse = [v for v in per_trial_avg_rmse if not np.isnan(v)]
+                mov_row[f'{category}_avg_r2_iqr'] = float(np.percentile(valid_r2, 75) - np.percentile(valid_r2, 25)) if len(valid_r2) >= 2 else np.nan
+                mov_row[f'{category}_avg_rmse_iqr'] = float(np.percentile(valid_rmse, 75) - np.percentile(valid_rmse, 25)) if len(valid_rmse) >= 2 else np.nan
+            else:
+                mov_row[f'{category}_avg_r2_iqr'] = np.nan
+                mov_row[f'{category}_avg_rmse_iqr'] = np.nan
+
+        result.append(mov_row)
+
+    return result
 
 
 def _group_by_prefix(run_names):
@@ -224,6 +320,8 @@ def _write_summary_csv(output_path, rows):
     for category in CATEGORY_ORDER:
         header.extend([f'{category}_{key}' for key in METRIC_COLUMNS])
         header.extend([f'{category}_{key}' for key in DERIVED_COLUMNS])
+        header.extend([f'{category}_{key}_iqr' for key in METRIC_COLUMNS])
+        header.extend([f'{category}_{key}_iqr' for key in DERIVED_COLUMNS])
 
     with open(output_path, 'w', newline='') as f:
         writer = csv.writer(f)
@@ -232,6 +330,25 @@ def _write_summary_csv(output_path, rows):
             writer.writerow([
                 row['test_name'],
                 *[_format_value(key, row.get(key)) for key in header[1:]],
+            ])
+
+
+def _write_movement_summary_csv(output_path, rows):
+    header = ['test_name', 'movement']
+    for category in CATEGORY_ORDER:
+        header.extend([f'{category}_{key}' for key in METRIC_COLUMNS])
+        header.extend([f'{category}_{key}' for key in DERIVED_COLUMNS])
+        header.extend([f'{category}_{key}_iqr' for key in METRIC_COLUMNS])
+        header.extend([f'{category}_{key}_iqr' for key in DERIVED_COLUMNS])
+
+    with open(output_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        for row in rows:
+            writer.writerow([
+                row['test_name'],
+                row['movement'],
+                *[_format_value(key, row.get(key)) for key in header[2:]],
             ])
 
 
@@ -298,19 +415,20 @@ def main():
 
     for prefix, runs in grouped.items():
         summary_rows = []
+        movement_rows = []
         for run_name in runs:
             validation_dir = _validation_dir(root_dir, run_name)
             rows = _load_metrics_rows(validation_dir, smooth_tag=smooth_tag)
             if not rows:
                 print(f'[WARN] No metrics found for {run_name} in {validation_dir}')
                 continue
+            collected_bench = set(args.collected_benchmark)
+            secondary_bench = set(args.secondary_benchmark)
             summary_rows.append(
-                _summarize_run(
-                    run_name,
-                    rows,
-                    set(args.collected_benchmark),
-                    set(args.secondary_benchmark),
-                )
+                _summarize_run(run_name, rows, collected_bench, secondary_bench)
+            )
+            movement_rows.extend(
+                _summarize_run_movement(run_name, rows, collected_bench, secondary_bench)
             )
 
         if not summary_rows:
@@ -320,6 +438,11 @@ def main():
         output_path = os.path.join(output_dir, f'{prefix}_summary.csv')
         _write_summary_csv(output_path, summary_rows)
         print(f'[OK] Wrote {output_path}')
+
+        if movement_rows:
+            movement_path = os.path.join(output_dir, f'{prefix}_movement_summary.csv')
+            _write_movement_summary_csv(movement_path, movement_rows)
+            print(f'[OK] Wrote {movement_path}')
 
 
 if __name__ == '__main__':

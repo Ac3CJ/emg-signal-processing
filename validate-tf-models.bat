@@ -14,32 +14,44 @@ if not exist "%MODEL_ROOT%" (
 )
 
 echo =========================================
-echo Validating all tf-prefixed runs
+echo Validating tf-prefixed runs (participant-only)
+echo Skipping cP1, cP2, cP3 (already complete)
 echo =========================================
 
 for /d %%D in ("%MODEL_ROOT%\tf*") do (
 	set "RUN_NAME=%%~nxD"
+	set "PARTICIPANT="
 	for /f "tokens=1 delims=_" %%P in ("!RUN_NAME!") do set "RUN_PREFIX=%%P"
+	for /f "tokens=2 delims=P" %%N in ("!RUN_NAME!") do set "PARTICIPANT=%%N"
 
-	if exist "%%D\training\best_shoulder_rcnn.pth" (
-		echo.
-		echo -----------------------------------------
-		echo Validating !RUN_NAME!
-		echo -----------------------------------------
-		python .\ModelValidator.py --name "!RUN_NAME!" --model "%%D\training\best_shoulder_rcnn.pth" --validate_all --arch rcnn
-		if errorlevel 1 (
-			echo Error: validation failed for !RUN_NAME!
-			popd
-			exit /b 1
-		)
+	set "SKIP_RUN=0"
+	if "!PARTICIPANT!"=="1" set "SKIP_RUN=1"
+	if "!PARTICIPANT!"=="2" set "SKIP_RUN=1"
+	if "!PARTICIPANT!"=="3" set "SKIP_RUN=1"
 
-		if defined RUN_PREFIXES (
-			set "RUN_PREFIXES=!RUN_PREFIXES! !RUN_PREFIX!"
-		) else (
-			set "RUN_PREFIXES=!RUN_PREFIX!"
-		)
+	if "!SKIP_RUN!"=="1" (
+		echo Skipping !RUN_NAME!: cP!PARTICIPANT! already validated.
 	) else (
-		echo Skipping !RUN_NAME!: missing training\best_shoulder_rcnn.pth
+		if exist "%%D\training\best_shoulder_rcnn.pth" (
+			echo.
+			echo -----------------------------------------
+			echo Validating !RUN_NAME! ^(participant !PARTICIPANT!^)
+			echo -----------------------------------------
+			python .\ModelValidator.py --name "!RUN_NAME!" --model "%%D\training\best_shoulder_rcnn.pth" --collected !PARTICIPANT! --arch rcnn
+			if errorlevel 1 (
+				echo Error: validation failed for !RUN_NAME!
+				popd
+				exit /b 1
+			)
+
+			if defined RUN_PREFIXES (
+				set "RUN_PREFIXES=!RUN_PREFIXES! !RUN_PREFIX!"
+			) else (
+				set "RUN_PREFIXES=!RUN_PREFIX!"
+			)
+		) else (
+			echo Skipping !RUN_NAME!: missing training\best_shoulder_rcnn.pth
+		)
 	)
 )
 

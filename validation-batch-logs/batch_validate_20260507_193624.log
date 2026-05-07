@@ -1,0 +1,40 @@
+Batch validation started: 20260507_193624
+============================================================
+
+[1/16] tfFroz_cP1  (arch=rcnn)
+Traceback (most recent call last):
+  File "C:\Users\conra\Documents\__University of Bath\_Year 4\_FYP\_Technical\python-signal-processing\ModelValidator.py", line 13, in <module>
+    import ModelTraining
+  File "C:\Users\conra\Documents\__University of Bath\_Year 4\_FYP\_Technical\python-signal-processing\ModelTraining.py", line 7, in <module>
+    import matplotlib.pyplot as plt
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\matplotlib\pyplot.py", line 66, in <module>
+    from matplotlib.figure import Figure, FigureBase, figaspect
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\matplotlib\figure.py", line 2366, in <module>
+    @_docstring.interpd
+     ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\matplotlib\_docstring.py", line 110, in __call__
+    self(obj.__init__)
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\matplotlib\_docstring.py", line 108, in __call__
+    super().__call__(obj)
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\matplotlib\_docstring.py", line 68, in __call__
+    func.__doc__ = inspect.cleandoc(func.__doc__) % self.params
+                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\matplotlib\_docstring.py", line 89, in __missing__
+    return self.setdefault(key, kwdoc(cls))
+                                ^^^^^^^^^^
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\matplotlib\artist.py", line 1858, in kwdoc
+    'Properties:\n' + '\n'.join(ai.pprint_setters(leadingspace=4)))
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\matplotlib\artist.py", line 1619, in pprint_setters
+    accepts = self.get_valid_values(prop)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\matplotlib\artist.py", line 1486, in get_valid_values
+    docstring = inspect.getdoc(func)
+                ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\inspect.py", line 873, in getdoc
+    return cleandoc(doc)
+           ^^^^^^^^^^^^^
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\inspect.py", line 902, in cleandoc
+    return '\n'.join(lines)
+           ^^^^^^^^^^^^^^^^
+KeyboardInterrupt

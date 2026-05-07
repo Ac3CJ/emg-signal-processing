@@ -3,8 +3,12 @@ batch_validate.py
 Run ModelValidator --validate_all for every trained model under neural-network-models/.
 
 Usage:
-    python batch_validate.py              # validate all discovered models
-    python batch_validate.py step_20ms aug_all   # validate specific run names only
+    python batch_validate.py                        # validate all discovered models
+    python batch_validate.py step_20ms aug_all      # exact run names
+    python batch_validate.py ablation_step          # prefix — matches ablation_step_20ms, etc.
+    python batch_validate.py ablation_ arch_        # multiple prefixes / exact names, mixed
+
+Each argument is matched as a prefix (startswith), so an exact name is a valid prefix of itself.
 
 Output: console progress + full log written to validation-batch-logs/batch_validate_<timestamp>.log
 
@@ -72,9 +76,9 @@ def main():
         print(f"No trained models found under {MODELS_ROOT}/")
         sys.exit(1)
 
-    runs = [(n, d) for n, d in all_runs if not filter_names or n in filter_names]
+    runs = [(n, d) for n, d in all_runs if not filter_names or any(n.startswith(f) for f in filter_names)]
     if not runs:
-        print(f"No runs matched: {filter_names}")
+        print(f"No runs matched any prefix in: {sorted(filter_names)}")
         sys.exit(1)
 
     print(f"Validating {len(runs)}/{len(all_runs)} model(s) — log: {log_path}\n")

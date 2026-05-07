@@ -8707,3 +8707,935 @@ Batch validation started: 20260505_225530
   -> OK
 
 [21/28] step_15ms  (arch=rcnn)
+  -> name: step_15ms
+  -> validate: False
+  -> validate_predefined: False
+  -> validate_benchmark: False
+  -> validate_all: True
+  -> collected: None
+  -> model: ./neural-network-models\step_15ms\training\best_shoulder_rcnn.pth
+  -> arch: rcnn
+  -> sim_file: ./secondary_data/Soggetto1/Movimento3.mat
+  -> plot: False
+  -> validation output dir: ./neural-network-models\step_15ms\validation
+
+[Validate All] Loading Model: ./neural-network-models\step_15ms\training\best_shoulder_rcnn.pth
+
+[Validate All] Processing collected (87 candidate trials)...
+  -> Analyzing cP1M1...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP1M1_predictions.csv
+     R² — Yaw: -0.701  Pitch: 0.000
+  -> Analyzing cP1M2...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP1M2_predictions.csv
+     R² — Yaw: -0.816  Pitch: 0.000
+  -> Analyzing cP1M3...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP1M3_predictions.csv
+     R² — Yaw: -0.908  Pitch: 0.000
+  -> Analyzing cP1M4...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP1M4_predictions.csv
+     R² — Yaw: -2.290  Pitch: 0.000
+  -> Analyzing cP1M5...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP1M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.081
+  -> Analyzing cP1M6...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP1M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.275
+  -> Analyzing cP1M7...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP1M7_predictions.csv
+     R² — Yaw: -0.796  Pitch: -0.293
+  -> Analyzing cP1M8...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP1M8_predictions.csv
+     R² — Yaw: -1.069  Pitch: -0.417
+  -> Analyzing cP1M9...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP1M9_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.000
+  -> Analyzing cP2M1...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP2M1_predictions.csv
+     R² — Yaw: -0.253  Pitch: 0.000
+  -> Analyzing cP2M2...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP2M2_predictions.csv
+     R² — Yaw: 0.028  Pitch: 0.000
+  -> Analyzing cP2M3...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP2M3_predictions.csv
+     R² — Yaw: 0.317  Pitch: 0.000
+  -> Analyzing cP2M4...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP2M4_predictions.csv
+     R² — Yaw: -12.046  Pitch: 0.000
+  -> Analyzing cP2M5...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP2M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.802
+  -> Analyzing cP2M6...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP2M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.633
+  -> Analyzing cP2M7...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP2M7_predictions.csv
+     R² — Yaw: -0.695  Pitch: -0.808
+  -> Analyzing cP2M8...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP2M8_predictions.csv
+     R² — Yaw: 0.173  Pitch: -0.854
+  -> Analyzing cP2M9...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP2M9_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.000
+  -> Analyzing cP3M1...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP3M1_predictions.csv
+     R² — Yaw: -0.072  Pitch: 0.000
+  -> Analyzing cP3M2...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP3M2_predictions.csv
+     R² — Yaw: 0.015  Pitch: 0.000
+  -> Analyzing cP3M3...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP3M3_predictions.csv
+     R² — Yaw: 0.383  Pitch: 0.000
+  -> Analyzing cP3M4...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP3M4_predictions.csv
+     R² — Yaw: -8.466  Pitch: 0.000
+  -> Analyzing cP3M5...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP3M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.767
+  -> Analyzing cP3M6...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP3M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.509
+  -> Analyzing cP3M7...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP3M7_predictions.csv
+     R² — Yaw: -0.230  Pitch: -0.794
+  -> Analyzing cP3M8...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP3M8_predictions.csv
+     R² — Yaw: 0.218  Pitch: -0.771
+  -> Analyzing cP3M9...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP3M9_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.000
+  -> Analyzing cP4M1...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP4M1_predictions.csv
+     R² — Yaw: 0.404  Pitch: 0.000
+  -> Analyzing cP4M2...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP4M2_predictions.csv
+     R² — Yaw: 0.188  Pitch: 0.000
+  -> Analyzing cP4M3...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP4M3_predictions.csv
+     R² — Yaw: 0.180  Pitch: 0.000
+  -> Analyzing cP4M4...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP4M4_predictions.csv
+     R² — Yaw: -1.457  Pitch: 0.000
+  -> Analyzing cP4M5...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP4M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.484
+  -> Analyzing cP4M6...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP4M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.405
+  -> Analyzing cP4M7...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP4M7_predictions.csv
+     R² — Yaw: -0.062  Pitch: -0.370
+  -> Analyzing cP4M8...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP4M8_predictions.csv
+     R² — Yaw: -0.465  Pitch: -0.235
+  -> Analyzing cP4M9...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP4M9_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.000
+  -> Analyzing cP4M10...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP4M10_predictions.csv
+  -> Skipping cP5M1: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP5M2: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP5M3: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP5M4: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP5M5: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP5M6: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP5M7: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP5M8: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP5M9: blacklisted in COLLECTED_BLACKLIST
+  -> Analyzing cP5M10...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP5M10_predictions.csv
+  -> Skipping cP6M1: blacklisted in COLLECTED_BLACKLIST
+  -> Analyzing cP6M2...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP6M2_predictions.csv
+     R² — Yaw: -0.586  Pitch: 0.000
+  -> Analyzing cP6M3...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP6M3_predictions.csv
+     R² — Yaw: -0.519  Pitch: 0.000
+  -> Analyzing cP6M4...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP6M4_predictions.csv
+     R² — Yaw: -40.767  Pitch: 0.000
+  -> Analyzing cP6M5...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP6M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.366
+  -> Analyzing cP6M6...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP6M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.338
+  -> Analyzing cP6M7...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP6M7_predictions.csv
+     R² — Yaw: -12.470  Pitch: -0.633
+  -> Analyzing cP6M8...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP6M8_predictions.csv
+     R² — Yaw: -1.413  Pitch: -0.540
+  -> Analyzing cP6M9...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP6M9_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.000
+  -> Analyzing cP6M10...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP6M10_predictions.csv
+  -> Skipping cP7M1: file not found at biosignal_data\collected\edited\P7M1_labelled.mat
+  -> Analyzing cP7M2...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP7M2_predictions.csv
+     R² — Yaw: -1.160  Pitch: 0.000
+  -> Analyzing cP7M3...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP7M3_predictions.csv
+     R² — Yaw: -0.271  Pitch: 0.000
+  -> Analyzing cP7M4...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP7M4_predictions.csv
+     R² — Yaw: -0.502  Pitch: 0.000
+  -> Analyzing cP7M5...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP7M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: -1.027
+  -> Analyzing cP7M6...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP7M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.308
+  -> Analyzing cP7M7...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP7M7_predictions.csv
+     R² — Yaw: -11.321  Pitch: -0.029
+  -> Analyzing cP7M8...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP7M8_predictions.csv
+     R² — Yaw: -1.871  Pitch: 0.199
+  -> Analyzing cP7M9...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP7M9_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.000
+  -> Analyzing cP7M10...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP7M10_predictions.csv
+  -> Analyzing cP8M1...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP8M1_predictions.csv
+     R² — Yaw: -4.206  Pitch: 0.000
+  -> Skipping cP8M2: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP8M3: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP8M4: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP8M5: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP8M6: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP8M7: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP8M8: blacklisted in COLLECTED_BLACKLIST
+  -> Analyzing cP8M9...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP8M9_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.000
+  -> Analyzing cP8M10...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP8M10_predictions.csv
+  -> Analyzing cP9M1...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP9M1_predictions.csv
+     R² — Yaw: -11.813  Pitch: 0.000
+  -> Analyzing cP9M2...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP9M2_predictions.csv
+     R² — Yaw: -2.038  Pitch: 0.000
+  -> Analyzing cP9M3...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP9M3_predictions.csv
+     R² — Yaw: -0.430  Pitch: 0.000
+  -> Analyzing cP9M4...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP9M4_predictions.csv
+     R² — Yaw: -56.705  Pitch: 0.000
+  -> Analyzing cP9M5...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP9M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.264
+  -> Analyzing cP9M6...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP9M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.110
+  -> Analyzing cP9M7...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP9M7_predictions.csv
+     R² — Yaw: -3.786  Pitch: -0.069
+  -> Analyzing cP9M8...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP9M8_predictions.csv
+     R² — Yaw: -2.186  Pitch: -0.557
+  -> Analyzing cP9M9...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP9M9_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.000
+  -> Analyzing cP9M10...
+     Predictions saved: ./neural-network-models\step_15ms\validation\cP9M10_predictions.csv
+
+[Validate All] collected combined metrics saved: ./neural-network-models\step_15ms\validation\c_all_metrics.csv
+
+[Validate All] Processing secondary (72 candidate trials)...
+  -> Skipping sP1M1: blacklisted in SECONDARY_BLACKLIST
+  -> Analyzing sP1M2...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP1M2_predictions.csv
+     R² — Yaw: 0.625  Pitch: 0.000
+  -> Analyzing sP1M3...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP1M3_predictions.csv
+     R² — Yaw: 0.736  Pitch: 0.000
+  -> Analyzing sP1M4...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP1M4_predictions.csv
+     R² — Yaw: 0.381  Pitch: 0.000
+  -> Skipping sP1M5: blacklisted in SECONDARY_BLACKLIST
+  -> Analyzing sP1M6...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP1M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.739
+  -> Analyzing sP1M7...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP1M7_predictions.csv
+     R² — Yaw: -0.915  Pitch: -0.105
+  -> Analyzing sP1M8...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP1M8_predictions.csv
+     R² — Yaw: 0.430  Pitch: 0.190
+  -> Analyzing sP1M9...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP1M9_predictions.csv
+  -> Analyzing sP2M1...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP2M1_predictions.csv
+     R² — Yaw: -9.582  Pitch: 0.000
+  -> Analyzing sP2M2...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP2M2_predictions.csv
+     R² — Yaw: 0.402  Pitch: 0.000
+  -> Analyzing sP2M3...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP2M3_predictions.csv
+     R² — Yaw: 0.596  Pitch: 0.000
+  -> Analyzing sP2M4...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP2M4_predictions.csv
+     R² — Yaw: -0.077  Pitch: 0.000
+  -> Analyzing sP2M5...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP2M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.383
+  -> Analyzing sP2M6...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP2M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.644
+  -> Analyzing sP2M7...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP2M7_predictions.csv
+     R² — Yaw: -1.250  Pitch: 0.182
+  -> Analyzing sP2M8...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP2M8_predictions.csv
+     R² — Yaw: 0.427  Pitch: -0.017
+  -> Analyzing sP2M9...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP2M9_predictions.csv
+  -> Analyzing sP3M1...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP3M1_predictions.csv
+     R² — Yaw: -4.844  Pitch: 0.000
+  -> Analyzing sP3M2...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP3M2_predictions.csv
+     R² — Yaw: 0.365  Pitch: 0.000
+  -> Analyzing sP3M3...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP3M3_predictions.csv
+     R² — Yaw: 0.515  Pitch: 0.000
+  -> Skipping sP3M4: blacklisted in SECONDARY_BLACKLIST
+  -> Analyzing sP3M5...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP3M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.273
+  -> Skipping sP3M6: blacklisted in SECONDARY_BLACKLIST
+  -> Analyzing sP3M7...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP3M7_predictions.csv
+     R² — Yaw: -0.334  Pitch: -0.063
+  -> Analyzing sP3M8...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP3M8_predictions.csv
+     R² — Yaw: 0.315  Pitch: -0.343
+  -> Analyzing sP3M9...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP3M9_predictions.csv
+  -> Analyzing sP4M1...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP4M1_predictions.csv
+     R² — Yaw: -8.449  Pitch: 0.000
+  -> Analyzing sP4M2...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP4M2_predictions.csv
+     R² — Yaw: 0.492  Pitch: 0.000
+  -> Analyzing sP4M3...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP4M3_predictions.csv
+     R² — Yaw: 0.743  Pitch: 0.000
+  -> Skipping sP4M4: blacklisted in SECONDARY_BLACKLIST
+  -> Analyzing sP4M5...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP4M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.318
+  -> Skipping sP4M6: blacklisted in SECONDARY_BLACKLIST
+  -> Analyzing sP4M7...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP4M7_predictions.csv
+     R² — Yaw: -9.369  Pitch: -5.709
+  -> Analyzing sP4M8...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP4M8_predictions.csv
+     R² — Yaw: -0.099  Pitch: -0.251
+  -> Analyzing sP4M9...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP4M9_predictions.csv
+  -> Skipping sP5M1: blacklisted in SECONDARY_BLACKLIST
+  -> Analyzing sP5M2...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP5M2_predictions.csv
+     R² — Yaw: 0.700  Pitch: 0.000
+  -> Analyzing sP5M3...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP5M3_predictions.csv
+     R² — Yaw: 0.737  Pitch: 0.000
+  -> Analyzing sP5M4...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP5M4_predictions.csv
+     R² — Yaw: 0.178  Pitch: 0.000
+  -> Analyzing sP5M5...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP5M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.556
+  -> Analyzing sP5M6...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP5M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.500
+  -> Analyzing sP5M7...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP5M7_predictions.csv
+     R² — Yaw: -1.079  Pitch: -0.280
+  -> Analyzing sP5M8...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP5M8_predictions.csv
+     R² — Yaw: 0.228  Pitch: 0.413
+  -> Analyzing sP5M9...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP5M9_predictions.csv
+  -> Analyzing sP6M1...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP6M1_predictions.csv
+     R² — Yaw: -2.862  Pitch: 0.000
+  -> Analyzing sP6M2...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP6M2_predictions.csv
+     R² — Yaw: 0.571  Pitch: 0.000
+  -> Analyzing sP6M3...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP6M3_predictions.csv
+     R² — Yaw: 0.591  Pitch: 0.000
+  -> Analyzing sP6M4...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP6M4_predictions.csv
+     R² — Yaw: 0.597  Pitch: 0.000
+  -> Skipping sP6M5: blacklisted in SECONDARY_BLACKLIST
+  -> Analyzing sP6M6...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP6M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.559
+  -> Analyzing sP6M7...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP6M7_predictions.csv
+     R² — Yaw: -0.667  Pitch: 0.337
+  -> Analyzing sP6M8...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP6M8_predictions.csv
+     R² — Yaw: 0.363  Pitch: 0.158
+  -> Analyzing sP6M9...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP6M9_predictions.csv
+  -> Skipping sP7M1: blacklisted in SECONDARY_BLACKLIST
+  -> Analyzing sP7M2...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP7M2_predictions.csv
+     R² — Yaw: 0.514  Pitch: 0.000
+  -> Analyzing sP7M3...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP7M3_predictions.csv
+     R² — Yaw: 0.505  Pitch: 0.000
+  -> Analyzing sP7M4...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP7M4_predictions.csv
+     R² — Yaw: -3.427  Pitch: 0.000
+  -> Analyzing sP7M5...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP7M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.501
+  -> Analyzing sP7M6...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP7M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.511
+  -> Analyzing sP7M7...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP7M7_predictions.csv
+     R² — Yaw: -0.524  Pitch: -0.011
+  -> Analyzing sP7M8...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP7M8_predictions.csv
+     R² — Yaw: 0.371  Pitch: -0.060
+  -> Analyzing sP7M9...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP7M9_predictions.csv
+  -> Analyzing sP8M1...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP8M1_predictions.csv
+     R² — Yaw: -0.160  Pitch: 0.000
+  -> Analyzing sP8M2...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP8M2_predictions.csv
+     R² — Yaw: 0.533  Pitch: 0.000
+  -> Analyzing sP8M3...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP8M3_predictions.csv
+     R² — Yaw: 0.681  Pitch: 0.000
+  -> Analyzing sP8M4...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP8M4_predictions.csv
+     R² — Yaw: 0.602  Pitch: 0.000
+  -> Analyzing sP8M5...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP8M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.628
+  -> Analyzing sP8M6...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP8M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.506
+  -> Analyzing sP8M7...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP8M7_predictions.csv
+     R² — Yaw: 0.036  Pitch: 0.502
+  -> Analyzing sP8M8...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP8M8_predictions.csv
+     R² — Yaw: 0.437  Pitch: 0.244
+  -> Analyzing sP8M9...
+     Predictions saved: ./neural-network-models\step_15ms\validation\sP8M9_predictions.csv
+
+[Validate All] secondary combined metrics saved: ./neural-network-models\step_15ms\validation\s_all_metrics.csv
+
+[Validate All] Done. CSVs saved to ./neural-network-models\step_15ms\validation/
+  -> OK
+
+[22/28] step_20ms  (arch=rcnn)
+  -> name: step_20ms
+  -> validate: False
+  -> validate_predefined: False
+  -> validate_benchmark: False
+  -> validate_all: True
+  -> collected: None
+  -> model: ./neural-network-models\step_20ms\training\best_shoulder_rcnn.pth
+  -> arch: rcnn
+  -> sim_file: ./secondary_data/Soggetto1/Movimento3.mat
+  -> plot: False
+  -> validation output dir: ./neural-network-models\step_20ms\validation
+
+[Validate All] Loading Model: ./neural-network-models\step_20ms\training\best_shoulder_rcnn.pth
+
+[Validate All] Processing collected (87 candidate trials)...
+  -> Analyzing cP1M1...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP1M1_predictions.csv
+     R² — Yaw: -0.033  Pitch: 0.000
+  -> Analyzing cP1M2...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP1M2_predictions.csv
+     R² — Yaw: -0.522  Pitch: 0.000
+  -> Analyzing cP1M3...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP1M3_predictions.csv
+     R² — Yaw: -0.782  Pitch: 0.000
+  -> Analyzing cP1M4...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP1M4_predictions.csv
+     R² — Yaw: -4.176  Pitch: 0.000
+  -> Analyzing cP1M5...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP1M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.264
+  -> Analyzing cP1M6...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP1M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.049
+  -> Analyzing cP1M7...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP1M7_predictions.csv
+     R² — Yaw: -0.513  Pitch: 0.040
+  -> Analyzing cP1M8...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP1M8_predictions.csv
+     R² — Yaw: -0.927  Pitch: -0.198
+  -> Analyzing cP1M9...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP1M9_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.000
+  -> Analyzing cP2M1...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP2M1_predictions.csv
+     R² — Yaw: -0.148  Pitch: 0.000
+  -> Analyzing cP2M2...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP2M2_predictions.csv
+     R² — Yaw: 0.082  Pitch: 0.000
+  -> Analyzing cP2M3...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP2M3_predictions.csv
+     R² — Yaw: 0.484  Pitch: 0.000
+  -> Analyzing cP2M4...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP2M4_predictions.csv
+     R² — Yaw: -7.896  Pitch: 0.000
+  -> Analyzing cP2M5...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP2M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.669
+  -> Analyzing cP2M6...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP2M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.480
+  -> Analyzing cP2M7...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP2M7_predictions.csv
+     R² — Yaw: -0.411  Pitch: -0.677
+  -> Analyzing cP2M8...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP2M8_predictions.csv
+     R² — Yaw: 0.338  Pitch: -0.746
+  -> Analyzing cP2M9...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP2M9_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.000
+  -> Analyzing cP3M1...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP3M1_predictions.csv
+     R² — Yaw: -0.142  Pitch: 0.000
+  -> Analyzing cP3M2...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP3M2_predictions.csv
+     R² — Yaw: 0.064  Pitch: 0.000
+  -> Analyzing cP3M3...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP3M3_predictions.csv
+     R² — Yaw: 0.461  Pitch: 0.000
+  -> Analyzing cP3M4...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP3M4_predictions.csv
+     R² — Yaw: -7.382  Pitch: 0.000
+  -> Analyzing cP3M5...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP3M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.670
+  -> Analyzing cP3M6...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP3M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.189
+  -> Analyzing cP3M7...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP3M7_predictions.csv
+     R² — Yaw: -0.307  Pitch: -0.694
+  -> Analyzing cP3M8...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP3M8_predictions.csv
+     R² — Yaw: 0.320  Pitch: -0.653
+  -> Analyzing cP3M9...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP3M9_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.000
+  -> Analyzing cP4M1...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP4M1_predictions.csv
+     R² — Yaw: 0.145  Pitch: 0.000
+  -> Analyzing cP4M2...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP4M2_predictions.csv
+     R² — Yaw: -0.081  Pitch: 0.000
+  -> Analyzing cP4M3...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP4M3_predictions.csv
+     R² — Yaw: -0.110  Pitch: 0.000
+  -> Analyzing cP4M4...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP4M4_predictions.csv
+     R² — Yaw: -1.199  Pitch: 0.000
+  -> Analyzing cP4M5...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP4M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.438
+  -> Analyzing cP4M6...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP4M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.005
+  -> Analyzing cP4M7...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP4M7_predictions.csv
+     R² — Yaw: -0.377  Pitch: -0.244
+  -> Analyzing cP4M8...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP4M8_predictions.csv
+     R² — Yaw: -0.585  Pitch: 0.027
+  -> Analyzing cP4M9...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP4M9_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.000
+  -> Analyzing cP4M10...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP4M10_predictions.csv
+  -> Skipping cP5M1: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP5M2: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP5M3: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP5M4: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP5M5: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP5M6: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP5M7: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP5M8: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP5M9: blacklisted in COLLECTED_BLACKLIST
+  -> Analyzing cP5M10...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP5M10_predictions.csv
+  -> Skipping cP6M1: blacklisted in COLLECTED_BLACKLIST
+  -> Analyzing cP6M2...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP6M2_predictions.csv
+     R² — Yaw: -0.404  Pitch: 0.000
+  -> Analyzing cP6M3...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP6M3_predictions.csv
+     R² — Yaw: -0.145  Pitch: 0.000
+  -> Analyzing cP6M4...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP6M4_predictions.csv
+     R² — Yaw: -38.444  Pitch: 0.000
+  -> Analyzing cP6M5...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP6M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.255
+  -> Analyzing cP6M6...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP6M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.322
+  -> Analyzing cP6M7...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP6M7_predictions.csv
+     R² — Yaw: -13.055  Pitch: -0.388
+  -> Analyzing cP6M8...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP6M8_predictions.csv
+     R² — Yaw: -0.565  Pitch: -0.449
+  -> Analyzing cP6M9...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP6M9_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.000
+  -> Analyzing cP6M10...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP6M10_predictions.csv
+  -> Skipping cP7M1: file not found at biosignal_data\collected\edited\P7M1_labelled.mat
+  -> Analyzing cP7M2...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP7M2_predictions.csv
+     R² — Yaw: -1.419  Pitch: 0.000
+  -> Analyzing cP7M3...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP7M3_predictions.csv
+     R² — Yaw: -0.478  Pitch: 0.000
+  -> Analyzing cP7M4...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP7M4_predictions.csv
+     R² — Yaw: -1.198  Pitch: 0.000
+  -> Analyzing cP7M5...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP7M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: -5.043
+  -> Analyzing cP7M6...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP7M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.202
+  -> Analyzing cP7M7...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP7M7_predictions.csv
+     R² — Yaw: -1.159  Pitch: -4.049
+  -> Analyzing cP7M8...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP7M8_predictions.csv
+     R² — Yaw: 0.277  Pitch: -0.197
+  -> Analyzing cP7M9...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP7M9_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.000
+  -> Analyzing cP7M10...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP7M10_predictions.csv
+  -> Analyzing cP8M1...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP8M1_predictions.csv
+     R² — Yaw: -0.663  Pitch: 0.000
+  -> Skipping cP8M2: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP8M3: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP8M4: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP8M5: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP8M6: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP8M7: blacklisted in COLLECTED_BLACKLIST
+  -> Skipping cP8M8: blacklisted in COLLECTED_BLACKLIST
+  -> Analyzing cP8M9...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP8M9_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.000
+  -> Analyzing cP8M10...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP8M10_predictions.csv
+  -> Analyzing cP9M1...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP9M1_predictions.csv
+     R² — Yaw: -10.421  Pitch: 0.000
+  -> Analyzing cP9M2...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP9M2_predictions.csv
+     R² — Yaw: -1.612  Pitch: 0.000
+  -> Analyzing cP9M3...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP9M3_predictions.csv
+     R² — Yaw: 0.134  Pitch: 0.000
+  -> Analyzing cP9M4...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP9M4_predictions.csv
+     R² — Yaw: -48.291  Pitch: 0.000
+  -> Analyzing cP9M5...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP9M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: -1.160
+  -> Analyzing cP9M6...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP9M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: -0.111
+  -> Analyzing cP9M7...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP9M7_predictions.csv
+     R² — Yaw: -1.913  Pitch: -0.793
+  -> Analyzing cP9M8...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP9M8_predictions.csv
+     R² — Yaw: -1.721  Pitch: -0.665
+  -> Analyzing cP9M9...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP9M9_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.000
+  -> Analyzing cP9M10...
+     Predictions saved: ./neural-network-models\step_20ms\validation\cP9M10_predictions.csv
+
+[Validate All] collected combined metrics saved: ./neural-network-models\step_20ms\validation\c_all_metrics.csv
+
+[Validate All] Processing secondary (72 candidate trials)...
+  -> Skipping sP1M1: blacklisted in SECONDARY_BLACKLIST
+  -> Analyzing sP1M2...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP1M2_predictions.csv
+     R² — Yaw: 0.670  Pitch: 0.000
+  -> Analyzing sP1M3...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP1M3_predictions.csv
+     R² — Yaw: 0.690  Pitch: 0.000
+  -> Analyzing sP1M4...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP1M4_predictions.csv
+     R² — Yaw: 0.032  Pitch: 0.000
+  -> Skipping sP1M5: blacklisted in SECONDARY_BLACKLIST
+  -> Analyzing sP1M6...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP1M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.793
+  -> Analyzing sP1M7...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP1M7_predictions.csv
+     R² — Yaw: -0.284  Pitch: 0.110
+  -> Analyzing sP1M8...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP1M8_predictions.csv
+     R² — Yaw: 0.410  Pitch: 0.499
+  -> Analyzing sP1M9...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP1M9_predictions.csv
+  -> Analyzing sP2M1...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP2M1_predictions.csv
+     R² — Yaw: -7.206  Pitch: 0.000
+  -> Analyzing sP2M2...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP2M2_predictions.csv
+     R² — Yaw: 0.472  Pitch: 0.000
+  -> Analyzing sP2M3...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP2M3_predictions.csv
+     R² — Yaw: 0.596  Pitch: 0.000
+  -> Analyzing sP2M4...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP2M4_predictions.csv
+     R² — Yaw: -0.104  Pitch: 0.000
+  -> Analyzing sP2M5...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP2M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.371
+  -> Analyzing sP2M6...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP2M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.687
+  -> Analyzing sP2M7...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP2M7_predictions.csv
+     R² — Yaw: -0.659  Pitch: -0.313
+  -> Analyzing sP2M8...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP2M8_predictions.csv
+     R² — Yaw: 0.356  Pitch: 0.240
+  -> Analyzing sP2M9...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP2M9_predictions.csv
+  -> Analyzing sP3M1...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP3M1_predictions.csv
+     R² — Yaw: -3.626  Pitch: 0.000
+  -> Analyzing sP3M2...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP3M2_predictions.csv
+     R² — Yaw: 0.492  Pitch: 0.000
+  -> Analyzing sP3M3...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP3M3_predictions.csv
+     R² — Yaw: 0.551  Pitch: 0.000
+  -> Skipping sP3M4: blacklisted in SECONDARY_BLACKLIST
+  -> Analyzing sP3M5...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP3M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.416
+  -> Skipping sP3M6: blacklisted in SECONDARY_BLACKLIST
+  -> Analyzing sP3M7...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP3M7_predictions.csv
+     R² — Yaw: -0.106  Pitch: 0.272
+  -> Analyzing sP3M8...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP3M8_predictions.csv
+     R² — Yaw: 0.292  Pitch: -0.095
+  -> Analyzing sP3M9...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP3M9_predictions.csv
+  -> Analyzing sP4M1...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP4M1_predictions.csv
+     R² — Yaw: -5.768  Pitch: 0.000
+  -> Analyzing sP4M2...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP4M2_predictions.csv
+     R² — Yaw: 0.487  Pitch: 0.000
+  -> Analyzing sP4M3...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP4M3_predictions.csv
+     R² — Yaw: 0.741  Pitch: 0.000
+  -> Skipping sP4M4: blacklisted in SECONDARY_BLACKLIST
+  -> Analyzing sP4M5...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP4M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.326
+  -> Skipping sP4M6: blacklisted in SECONDARY_BLACKLIST
+  -> Analyzing sP4M7...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP4M7_predictions.csv
+     R² — Yaw: -7.690  Pitch: -4.000
+  -> Analyzing sP4M8...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP4M8_predictions.csv
+     R² — Yaw: -0.027  Pitch: 0.016
+  -> Analyzing sP4M9...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP4M9_predictions.csv
+  -> Skipping sP5M1: blacklisted in SECONDARY_BLACKLIST
+  -> Analyzing sP5M2...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP5M2_predictions.csv
+     R² — Yaw: 0.729  Pitch: 0.000
+  -> Analyzing sP5M3...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP5M3_predictions.csv
+     R² — Yaw: 0.785  Pitch: 0.000
+  -> Analyzing sP5M4...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP5M4_predictions.csv
+     R² — Yaw: -0.640  Pitch: 0.000
+  -> Analyzing sP5M5...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP5M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.608
+  -> Analyzing sP5M6...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP5M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.595
+  -> Analyzing sP5M7...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP5M7_predictions.csv
+     R² — Yaw: -0.352  Pitch: 0.444
+  -> Analyzing sP5M8...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP5M8_predictions.csv
+     R² — Yaw: 0.088  Pitch: 0.640
+  -> Analyzing sP5M9...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP5M9_predictions.csv
+  -> Analyzing sP6M1...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP6M1_predictions.csv
+     R² — Yaw: -1.222  Pitch: 0.000
+  -> Analyzing sP6M2...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP6M2_predictions.csv
+     R² — Yaw: 0.635  Pitch: 0.000
+  -> Analyzing sP6M3...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP6M3_predictions.csv
+     R² — Yaw: 0.615  Pitch: 0.000
+  -> Analyzing sP6M4...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP6M4_predictions.csv
+     R² — Yaw: 0.653  Pitch: 0.000
+  -> Skipping sP6M5: blacklisted in SECONDARY_BLACKLIST
+  -> Analyzing sP6M6...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP6M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.593
+  -> Analyzing sP6M7...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP6M7_predictions.csv
+     R² — Yaw: -0.272  Pitch: 0.598
+  -> Analyzing sP6M8...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP6M8_predictions.csv
+     R² — Yaw: 0.367  Pitch: 0.360
+  -> Analyzing sP6M9...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP6M9_predictions.csv
+  -> Skipping sP7M1: blacklisted in SECONDARY_BLACKLIST
+  -> Analyzing sP7M2...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP7M2_predictions.csv
+     R² — Yaw: 0.616  Pitch: 0.000
+  -> Analyzing sP7M3...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP7M3_predictions.csv
+     R² — Yaw: 0.534  Pitch: 0.000
+  -> Analyzing sP7M4...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP7M4_predictions.csv
+     R² — Yaw: -8.604  Pitch: 0.000
+  -> Analyzing sP7M5...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP7M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.536
+  -> Analyzing sP7M6...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP7M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.636
+  -> Analyzing sP7M7...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP7M7_predictions.csv
+     R² — Yaw: -0.110  Pitch: 0.536
+  -> Analyzing sP7M8...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP7M8_predictions.csv
+     R² — Yaw: 0.279  Pitch: 0.303
+  -> Analyzing sP7M9...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP7M9_predictions.csv
+  -> Analyzing sP8M1...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP8M1_predictions.csv
+     R² — Yaw: 0.279  Pitch: 0.000
+  -> Analyzing sP8M2...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP8M2_predictions.csv
+     R² — Yaw: 0.618  Pitch: 0.000
+  -> Analyzing sP8M3...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP8M3_predictions.csv
+     R² — Yaw: 0.670  Pitch: 0.000
+  -> Analyzing sP8M4...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP8M4_predictions.csv
+     R² — Yaw: 0.436  Pitch: 0.000
+  -> Analyzing sP8M5...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP8M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.420
+  -> Analyzing sP8M6...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP8M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.622
+  -> Analyzing sP8M7...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP8M7_predictions.csv
+     R² — Yaw: 0.151  Pitch: 0.550
+  -> Analyzing sP8M8...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP8M8_predictions.csv
+     R² — Yaw: 0.363  Pitch: 0.510
+  -> Analyzing sP8M9...
+     Predictions saved: ./neural-network-models\step_20ms\validation\sP8M9_predictions.csv
+
+[Validate All] secondary combined metrics saved: ./neural-network-models\step_20ms\validation\s_all_metrics.csv
+
+[Validate All] Done. CSVs saved to ./neural-network-models\step_20ms\validation/
+  -> OK
+
+[23/28] step_4ms  (arch=rcnn)
+  -> name: step_4ms
+  -> validate: False
+  -> validate_predefined: False
+  -> validate_benchmark: False
+  -> validate_all: True
+  -> collected: None
+  -> model: ./neural-network-models\step_4ms\training\best_shoulder_rcnn.pth
+  -> arch: rcnn
+  -> sim_file: ./secondary_data/Soggetto1/Movimento3.mat
+  -> plot: False
+  -> validation output dir: ./neural-network-models\step_4ms\validation
+
+[Validate All] Loading Model: ./neural-network-models\step_4ms\training\best_shoulder_rcnn.pth
+
+[Validate All] Processing collected (87 candidate trials)...
+  -> Analyzing cP1M1...
+     Predictions saved: ./neural-network-models\step_4ms\validation\cP1M1_predictions.csv
+     R² — Yaw: 0.082  Pitch: 0.000
+  -> Analyzing cP1M2...
+     Predictions saved: ./neural-network-models\step_4ms\validation\cP1M2_predictions.csv
+     R² — Yaw: -0.235  Pitch: 0.000
+  -> Analyzing cP1M3...
+     Predictions saved: ./neural-network-models\step_4ms\validation\cP1M3_predictions.csv
+     R² — Yaw: -0.707  Pitch: 0.000
+  -> Analyzing cP1M4...
+     Predictions saved: ./neural-network-models\step_4ms\validation\cP1M4_predictions.csv
+     R² — Yaw: -2.809  Pitch: 0.000
+  -> Analyzing cP1M5...
+     Predictions saved: ./neural-network-models\step_4ms\validation\cP1M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.090
+  -> Analyzing cP1M6...
+     Predictions saved: ./neural-network-models\step_4ms\validation\cP1M6_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.012
+  -> Analyzing cP1M7...
+Traceback (most recent call last):
+  File "C:\Users\conra\Documents\__University of Bath\_Year 4\_FYP\_Technical\python-signal-processing\ModelValidator.py", line 762, in <module>
+    run_all_validation(model_path=args.model, output_dir=validation_dir, plot=args.plot, model_name=args.name,
+  File "C:\Users\conra\Documents\__University of Bath\_Year 4\_FYP\_Technical\python-signal-processing\ModelValidator.py", line 694, in run_all_validation
+    predictions, time_axis = get_predictions_for_file(model, device, file_path, mat_data=mat_data)
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\Documents\__University of Bath\_Year 4\_FYP\_Technical\python-signal-processing\ModelValidator.py", line 444, in get_predictions_for_file
+    pred = model(window_tensor).cpu().numpy()[0]
+           ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\Documents\__University of Bath\_Year 4\_FYP\_Technical\python-signal-processing\NeuralNetworkModels.py", line 299, in forward
+    x = self.inception1(x)
+        ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\Documents\__University of Bath\_Year 4\_FYP\_Technical\python-signal-processing\NeuralNetworkModels.py", line 224, in forward
+    return torch.cat([out1, out2, out3], dim=1)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt

@@ -52,7 +52,6 @@ def _alpha_tag(alpha: float) -> str:
         return '0' + s[2:]
     return s.replace('.', '')
 
-
 # ---------------------------------------------------------------------------
 # EMA
 # ---------------------------------------------------------------------------
@@ -63,7 +62,6 @@ def _apply_ema(series: np.ndarray, alpha: float) -> np.ndarray:
     for i in range(1, len(series)):
         out[i] = alpha * series[i] + (1.0 - alpha) * out[i - 1]
     return out
-
 
 # ---------------------------------------------------------------------------
 # Metric helpers (reimplemented inline — avoids importing ModelValidator and

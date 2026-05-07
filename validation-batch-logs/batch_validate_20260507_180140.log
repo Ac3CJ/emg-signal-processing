@@ -1,0 +1,49 @@
+Batch validation started: 20260507_180140
+============================================================
+
+[1/16] tfFroz_cP1  (arch=rcnn)
+  -> name: tfFroz_cP1
+  -> validate: False
+  -> validate_predefined: False
+  -> validate_benchmark: False
+  -> validate_all: True
+  -> collected: None
+  -> model: ./neural-network-models\tfFroz_cP1\training\best_shoulder_rcnn.pth
+  -> arch: rcnn
+  -> sim_file: ./secondary_data/Soggetto1/Movimento3.mat
+  -> plot: False
+  -> validation output dir: ./neural-network-models\tfFroz_cP1\validation
+
+[Validate All] Loading Model: ./neural-network-models\tfFroz_cP1\training\best_shoulder_rcnn.pth
+[Run Config] Loaded sidecar: model_type=rcnn, WINDOW_SIZE=100, INCREMENT=15
+
+[Validate All] Processing collected (87 candidate trials)...
+  -> Analyzing cP1M1...
+     Predictions saved: ./neural-network-models\tfFroz_cP1\validation\cP1M1_predictions.csv
+     R² — Yaw: 0.080  Pitch: 0.000
+  -> Analyzing cP1M2...
+Traceback (most recent call last):
+  File "C:\Users\conra\Documents\__University of Bath\_Year 4\_FYP\_Technical\python-signal-processing\ModelValidator.py", line 762, in <module>
+    run_all_validation(model_path=args.model, output_dir=validation_dir, plot=args.plot, model_name=args.name,
+  File "C:\Users\conra\Documents\__University of Bath\_Year 4\_FYP\_Technical\python-signal-processing\ModelValidator.py", line 694, in run_all_validation
+    predictions, time_axis = get_predictions_for_file(model, device, file_path, mat_data=mat_data)
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\Documents\__University of Bath\_Year 4\_FYP\_Technical\python-signal-processing\ModelValidator.py", line 428, in get_predictions_for_file
+    cleaned_window[c, :] = SignalProcessing.applyStandardSEMGProcessing(
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\Documents\__University of Bath\_Year 4\_FYP\_Technical\python-signal-processing\SignalProcessing.py", line 538, in applyStandardSEMGProcessing
+    clean_signal = bandpassFilter(clean_signal, fs=fs, lowCut=Config.BANDPASS_LOW, highCut=Config.BANDPASS_HIGH)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\Documents\__University of Bath\_Year 4\_FYP\_Technical\python-signal-processing\SignalProcessing.py", line 255, in bandpassFilter
+    b, a = scipy.signal.butter(order, [low, high], btype='band')
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\scipy\signal\_filter_design.py", line 3230, in butter
+    return iirfilter(N, Wn, btype=btype, analog=analog,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\scipy\signal\_filter_design.py", line 2650, in iirfilter
+    z, p, k = lp2bp_zpk(z, p, k, wo=wo, bw=bw)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\scipy\signal\_filter_design.py", line 2995, in lp2bp_zpk
+    z_lp = z_lp.astype(complex)
+           ^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt

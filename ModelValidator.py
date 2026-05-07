@@ -10,11 +10,44 @@ from sklearn.metrics import r2_score, mean_squared_error
 
 import SignalProcessing
 import NeuralNetworkModels as NNModels
+import ModelTraining
 import ControllerConfiguration as Config
 from FileRepository import DataRepository, FileSelection
 import KinematicPlotter
 
 DOF_NAMES = ['Yaw', 'Pitch']
+
+
+def _load_registered_model(model_path, model_type, device):
+    """Instantiates the correct model class from the registry and loads saved weights.
+
+    If a sidecar `<model>_run_config.json` exists next to the checkpoint, its values
+    (WINDOW_SIZE, INCREMENT, NUM_CHANNELS, NUM_OUTPUTS, model_type) override Config and
+    the supplied model_type. This protects against Config drift between training and
+    validation — e.g. NaiveANN whose input layer width depends on Config.WINDOW_SIZE.
+    """
+    import json
+    run_config_path = os.path.splitext(model_path)[0] + '_run_config.json'
+    if os.path.exists(run_config_path):
+        with open(run_config_path, 'r') as f:
+            run_cfg = json.load(f)
+        if 'WINDOW_SIZE' in run_cfg:
+            Config.WINDOW_SIZE = int(run_cfg['WINDOW_SIZE'])
+        if 'INCREMENT' in run_cfg:
+            Config.INCREMENT = int(run_cfg['INCREMENT'])
+        model_type = run_cfg.get('model_type', model_type)
+        print(f"[Run Config] Loaded sidecar: model_type={model_type}, "
+              f"WINDOW_SIZE={Config.WINDOW_SIZE}, INCREMENT={Config.INCREMENT}")
+
+    model = ModelTraining._instantiate_model(
+        ModelTraining.MODEL_REGISTRY[model_type][0],
+        num_channels=Config.NUM_CHANNELS,
+        num_outputs=Config.NUM_OUTPUTS,
+        window_size=Config.WINDOW_SIZE,
+    ).to(device)
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.eval()
+    return model
 
 
 def _resolve_validation_dir(run_name):
@@ -384,7 +417,6 @@ def get_predictions_for_file(model, device, file_path, mat_data=None):
         print(f"[ModelValidator] WARNING: MIN_MAX_ROBUST not found for {file_path}. Falling back to per-window percentiles.")
 
     predictions = []
-    smoothed_pred = np.zeros(Config.NUM_OUTPUTS)
     window_starts = _compute_window_starts(num_samples)
 
     with torch.no_grad():
@@ -410,21 +442,18 @@ def get_predictions_for_file(model, device, file_path, mat_data=None):
 
             window_tensor = torch.tensor(normalized_window, dtype=torch.float32).unsqueeze(0).to(device)
             pred = model(window_tensor).cpu().numpy()[0]
-            smoothed_pred = (Config.SMOOTHING_ALPHA * pred) + ((1.0 - Config.SMOOTHING_ALPHA) * smoothed_pred)
-            predictions.append(smoothed_pred.copy())
+            predictions.append(pred.copy())
 
     return np.array(predictions), np.array(window_starts) / Config.FS
 
 
-def run_collected_validation(model_path, participant_num, base_path=Config.COLLECTED_DATA_PATH, output_dir='validation-csv', plot=False, model_name=None):
+def run_collected_validation(model_path, participant_num, base_path=Config.COLLECTED_DATA_PATH, output_dir='validation-csv', plot=False, model_name=None, model_type='rcnn'):
     """Validates all movements (M1-M9) for a specific participant using collected data."""
     os.makedirs(output_dir, exist_ok=True)
 
     print(f"\n[Collected Data Validation] Loading Model: {model_path}")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = NNModels.ShoulderRCNN(num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
-    model.eval()
+    model = _load_registered_model(model_path, model_type, device)
 
     repository = DataRepository.from_standard_path(base_path)
 
@@ -475,7 +504,7 @@ def run_collected_validation(model_path, participant_num, base_path=Config.COLLE
 
 
 def run_benchmark_validation(model_path, output_dir, base_path=Config.COLLECTED_DATA_PATH,
-                             test_participants=(3, 6, 7, 9), plot=False, model_name=None):
+                             test_participants=(3, 6, 7, 9), plot=False, model_name=None, model_type='rcnn'):
     """Validates the held-out collected benchmark participants and writes CSVs to output_dir.
 
     Mirrors the train/test split used by the benchmark training pipeline:
@@ -487,9 +516,7 @@ def run_benchmark_validation(model_path, output_dir, base_path=Config.COLLECTED_
     blacklist = set(getattr(Config, 'COLLECTED_BLACKLIST', []) or [])
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = NNModels.ShoulderRCNN(num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
-    model.eval()
+    model = _load_registered_model(model_path, model_type, device)
 
     repository = DataRepository.from_standard_path(base_path)
     all_metrics_rows = []
@@ -540,16 +567,14 @@ def run_benchmark_validation(model_path, output_dir, base_path=Config.COLLECTED_
     print(f"\n[Benchmark Validation] Done. CSVs saved to {output_dir}/")
 
 
-def run_fast_validation(model_path, sim_file=None, predefined=False, base_path='./secondary_data', output_dir='validation-csv', plot=False, model_name=None):
+def run_fast_validation(model_path, sim_file=None, predefined=False, base_path='./secondary_data', output_dir='validation-csv', plot=False, model_name=None, model_type='rcnn'):
     repository = DataRepository.from_standard_path(base_path)
 
     os.makedirs(output_dir, exist_ok=True)
 
     print(f"\n[Fast Validation] Loading Model: {model_path}")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = NNModels.ShoulderRCNN(num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
-    model.eval()
+    model = _load_registered_model(model_path, model_type, device)
 
     if predefined:
         print("[Fast Validation] Running predefined benchmark suite...")
@@ -620,7 +645,8 @@ def run_fast_validation(model_path, sim_file=None, predefined=False, base_path='
 
 def run_all_validation(model_path, output_dir='validation-csv', plot=False, model_name=None,
                        collected_base=Config.COLLECTED_DATA_PATH,
-                       secondary_base=Config.SECONDARY_DATA_PATH):
+                       secondary_base=Config.SECONDARY_DATA_PATH,
+                       model_type='rcnn'):
     """Validates every available (P, M) trial across both collected and secondary datasets.
 
     Honors COLLECTED_BLACKLIST and SECONDARY_BLACKLIST. Predictions and per-trial metrics
@@ -631,9 +657,7 @@ def run_all_validation(model_path, output_dir='validation-csv', plot=False, mode
 
     print(f"\n[Validate All] Loading Model: {model_path}")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = NNModels.ShoulderRCNN(num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
-    model.eval()
+    model = _load_registered_model(model_path, model_type, device)
 
     sources = [
         ('collected', collected_base, set(getattr(Config, 'COLLECTED_BLACKLIST', []) or [])),
@@ -705,6 +729,8 @@ if __name__ == "__main__":
     parser.add_argument('--collected', type=int, help='Validate all movements for a participant using collected data (e.g., --collected 1)')
     parser.add_argument('--model', type=str, default=None,
                         help='Path to the trained PyTorch weights. Defaults to ./neural-network-models/<name>/training/best_shoulder_rcnn.pth.')
+    parser.add_argument('--arch', type=str, default='rcnn',
+                        help='Model architecture key from MODEL_REGISTRY (default: rcnn).')
     parser.add_argument('--sim_file', type=str, default='./secondary_data/Soggetto1/Movimento3.mat', help='Specific .mat file to validate')
     parser.add_argument('--plot', action='store_true',
                         help='Render predicted-vs-GT kinematics PNGs alongside the CSVs (off by default).')
@@ -725,13 +751,13 @@ if __name__ == "__main__":
     print(f"  -> validation output dir: {validation_dir}")
 
     if args.validate_predefined:
-        run_fast_validation(model_path=args.model, predefined=True, base_path=Config.SECONDARY_DATA_PATH, output_dir=validation_dir, plot=args.plot, model_name=args.name)
+        run_fast_validation(model_path=args.model, predefined=True, base_path=Config.SECONDARY_DATA_PATH, output_dir=validation_dir, plot=args.plot, model_name=args.name, model_type=args.arch)
     if args.validate:
-        run_fast_validation(model_path=args.model, sim_file=args.sim_file, predefined=False, output_dir=validation_dir, plot=args.plot, model_name=args.name)
+        run_fast_validation(model_path=args.model, sim_file=args.sim_file, predefined=False, output_dir=validation_dir, plot=args.plot, model_name=args.name, model_type=args.arch)
     if args.collected is not None:
-        run_collected_validation(model_path=args.model, participant_num=args.collected, output_dir=validation_dir, plot=args.plot, model_name=args.name)
+        run_collected_validation(model_path=args.model, participant_num=args.collected, output_dir=validation_dir, plot=args.plot, model_name=args.name, model_type=args.arch)
     if args.validate_benchmark:
-        run_benchmark_validation(model_path=args.model, output_dir=validation_dir, base_path=Config.COLLECTED_DATA_PATH, plot=args.plot, model_name=args.name)
+        run_benchmark_validation(model_path=args.model, output_dir=validation_dir, base_path=Config.COLLECTED_DATA_PATH, plot=args.plot, model_name=args.name, model_type=args.arch)
     if args.validate_all:
         run_all_validation(model_path=args.model, output_dir=validation_dir, plot=args.plot, model_name=args.name,
-                           collected_base=Config.COLLECTED_DATA_PATH, secondary_base=Config.SECONDARY_DATA_PATH)
+                           collected_base=Config.COLLECTED_DATA_PATH, secondary_base=Config.SECONDARY_DATA_PATH, model_type=args.arch)

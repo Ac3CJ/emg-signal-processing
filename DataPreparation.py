@@ -593,69 +593,61 @@ def load_and_prepare_dataset(
 		return None, None, [], []
 
 	# ============================== AUGMENTATION ==============================
-	classes_only = [cls for cls, _ in all_classes]
+	base_emg_bursts = all_emg_bursts
+	base_kin_bursts = all_kin_bursts
+	base_classes = [cls for cls, _ in all_classes]
+	base_minmax = [minmax for _, minmax in all_classes]
+
+	emg_bursts = list(base_emg_bursts)
+	kin_bursts = list(base_kin_bursts)
+	classes_only = list(base_classes)
+	minmax_lookup = list(base_minmax)
+
 	if augment and getattr(Config, 'MIXUP_RATIO', 0) > 0:
-		# Mixup samples inherit the participant min/max of their first source burst.
-		minmax_lookup = [minmax for _, minmax in all_classes]
-		all_emg_bursts, all_kin_bursts, classes_only = _apply_within_class_mixup(
-			all_emg_bursts, all_kin_bursts, classes_only,
+		mixed_emg, mixed_kin, mixed_cls = _apply_within_class_mixup(
+			base_emg_bursts, base_kin_bursts, base_classes,
 			alpha=Config.MIXUP_ALPHA, ratio=Config.MIXUP_RATIO,
 		)
-		# Pad minmax_lookup with the first source burst's min/max for each new mixup item.
-		while len(minmax_lookup) < len(classes_only):
-			minmax_lookup.append(minmax_lookup[0])
-		all_classes = list(zip(classes_only, minmax_lookup))
+		mixup_count = max(0, len(mixed_emg) - len(base_emg_bursts))
+		if mixup_count:
+			emg_bursts.extend(mixed_emg[len(base_emg_bursts):])
+			kin_bursts.extend(mixed_kin[len(base_emg_bursts):])
+			classes_only.extend(mixed_cls[len(base_emg_bursts):])
+			if base_minmax:
+				minmax_lookup.extend([base_minmax[0]] * mixup_count)
 
-	if augment:
-		minmax_lookup = [minmax for _, minmax in all_classes]
-		expanded_emg = []
-		expanded_kin = []
-		expanded_classes = []
-		expanded_minmax = []
-		noise_magnitudes = _resolve_training_noise_magnitudes() if include_noise_aug else []
-
-		for emg_b, kin_b, cls, mm in zip(all_emg_bursts, all_kin_bursts, classes_only, minmax_lookup):
-			expanded_emg.append(np.asarray(emg_b, dtype=np.float32))
-			expanded_kin.append(np.asarray(kin_b, dtype=np.float32))
-			expanded_classes.append(cls)
-			expanded_minmax.append(mm)
-
+	if augment and include_noise_aug:
+		noise_magnitudes = _resolve_training_noise_magnitudes()
+		for emg_b, kin_b, cls, mm in zip(base_emg_bursts, base_kin_bursts, base_classes, base_minmax):
 			for mag in noise_magnitudes:
-				expanded_emg.append(_inject_white_noise_to_burst(emg_b, [mag]))
-				expanded_kin.append(np.asarray(kin_b, dtype=np.float32))
-				expanded_classes.append(cls)
-				expanded_minmax.append(mm)
-
-		all_emg_bursts = expanded_emg
-		all_kin_bursts = expanded_kin
-		classes_only = expanded_classes
-		minmax_lookup = expanded_minmax
-	else:
-		minmax_lookup = [minmax for _, minmax in all_classes]
+				emg_bursts.append(_inject_white_noise_to_burst(emg_b, [mag]))
+				kin_bursts.append(np.asarray(kin_b, dtype=np.float32))
+				classes_only.append(cls)
+				minmax_lookup.append(mm)
 
 	# ============================== FILTERING ==============================
-	print(f"\nFiltering and normalising {len(all_emg_bursts)} bursts (per-burst notch+bandpass+rectify+normalize)...")
+	print(f"\nFiltering and normalising {len(emg_bursts)} bursts (per-burst notch+bandpass+rectify+normalize)...")
 	filtered_emg = [
 		_filter_and_normalize_burst(emg_b, mm)
-		for emg_b, mm in zip(all_emg_bursts, minmax_lookup)
+		for emg_b, mm in zip(emg_bursts, minmax_lookup)
 	]
 
 	if augment and getattr(Config, 'ENABLE_MAGNITUDE_WARPING', True):
-		mw_filtered, mw_kin, mw_classes = [], [], []
-		for filt_b, kin_b, cls in zip(filtered_emg, all_kin_bursts, classes_only):
-			mw_filtered.append(filt_b)
-			mw_kin.append(kin_b)
-			mw_classes.append(cls)
+		base_count = len(base_emg_bursts)
+		mw_filtered = list(filtered_emg)
+		mw_kin = list(kin_bursts)
+		mw_classes = list(classes_only)
+		for filt_b, kin_b, cls in zip(filtered_emg[:base_count], base_kin_bursts, base_classes):
 			mw_filtered.append(np.clip(apply_magnitude_warping(filt_b, sigma=0.1), 0.0, 1.0))
 			mw_kin.append(np.asarray(kin_b, dtype=np.float32))
 			mw_classes.append(cls)
-		filtered_emg, all_kin_bursts, classes_only = mw_filtered, mw_kin, mw_classes
+		filtered_emg, kin_bursts, classes_only = mw_filtered, mw_kin, mw_classes
 
 	if should_shuffle_segment_blocks:
-		_shuffle_segment_lists_in_place(filtered_emg, all_kin_bursts, classes_only, block_shuffle_rng)
+		_shuffle_segment_lists_in_place(filtered_emg, kin_bursts, classes_only, block_shuffle_rng)
 
 	continuous_X, continuous_y, segment_bounds, segment_classes = _concat_segments(
-		filtered_emg, all_kin_bursts, classes_only
+		filtered_emg, kin_bursts, classes_only
 	)
 	if continuous_X is None:
 		print("No valid continuous data extracted.")
@@ -863,63 +855,61 @@ def load_collected_data(
 		return None, None, [], []
 
 	# ============================== AUGMENTATION ==============================
+	base_emg_bursts = all_emg_bursts
+	base_kin_bursts = all_kin_bursts
+	base_classes = all_classes
+	base_minmax = per_burst_minmax
+
+	emg_bursts = list(base_emg_bursts)
+	kin_bursts = list(base_kin_bursts)
+	classes_only = list(base_classes)
+	minmax_lookup = list(base_minmax)
+
 	if augment and getattr(Config, 'MIXUP_RATIO', 0) > 0:
-		original_count = len(all_emg_bursts)
-		all_emg_bursts, all_kin_bursts, all_classes = _apply_within_class_mixup(
-			all_emg_bursts, all_kin_bursts, all_classes,
+		mixed_emg, mixed_kin, mixed_cls = _apply_within_class_mixup(
+			base_emg_bursts, base_kin_bursts, base_classes,
 			alpha=Config.MIXUP_ALPHA, ratio=Config.MIXUP_RATIO,
 		)
-		while len(per_burst_minmax) < len(all_emg_bursts):
-			per_burst_minmax.append(per_burst_minmax[0])
-		print(f"  [Augmentation] Mixup: {original_count} → {len(all_emg_bursts)} bursts")
+		mixup_count = max(0, len(mixed_emg) - len(base_emg_bursts))
+		if mixup_count:
+			emg_bursts.extend(mixed_emg[len(base_emg_bursts):])
+			kin_bursts.extend(mixed_kin[len(base_emg_bursts):])
+			classes_only.extend(mixed_cls[len(base_emg_bursts):])
+			if base_minmax:
+				minmax_lookup.extend([base_minmax[0]] * mixup_count)
 
-	if augment:
-		noise_magnitudes = _resolve_training_noise_magnitudes() if include_noise_aug else []
-		expanded_emg = []
-		expanded_kin = []
-		expanded_classes = []
-		expanded_minmax = []
-
-		for emg_b, kin_b, cls, mm in zip(all_emg_bursts, all_kin_bursts, all_classes, per_burst_minmax):
-			expanded_emg.append(np.asarray(emg_b, dtype=np.float32))
-			expanded_kin.append(np.asarray(kin_b, dtype=np.float32))
-			expanded_classes.append(cls)
-			expanded_minmax.append(mm)
-
+	if augment and include_noise_aug:
+		noise_magnitudes = _resolve_training_noise_magnitudes()
+		for emg_b, kin_b, cls, mm in zip(base_emg_bursts, base_kin_bursts, base_classes, base_minmax):
 			for mag in noise_magnitudes:
-				expanded_emg.append(_inject_white_noise_to_burst(emg_b, [mag]))
-				expanded_kin.append(np.asarray(kin_b, dtype=np.float32))
-				expanded_classes.append(cls)
-				expanded_minmax.append(mm)
-
-		all_emg_bursts = expanded_emg
-		all_kin_bursts = expanded_kin
-		all_classes = expanded_classes
-		per_burst_minmax = expanded_minmax
+				emg_bursts.append(_inject_white_noise_to_burst(emg_b, [mag]))
+				kin_bursts.append(np.asarray(kin_b, dtype=np.float32))
+				classes_only.append(cls)
+				minmax_lookup.append(mm)
 
 	# ============================== FILTERING ==============================
-	print(f"\n[Collected Data] Filtering and normalising {len(all_emg_bursts)} bursts...")
+	print(f"\n[Collected Data] Filtering and normalising {len(emg_bursts)} bursts...")
 	filtered_emg = [
 		_filter_and_normalize_burst(emg_b, mm)
-		for emg_b, mm in zip(all_emg_bursts, per_burst_minmax)
+		for emg_b, mm in zip(emg_bursts, minmax_lookup)
 	]
 
 	if augment and getattr(Config, 'ENABLE_MAGNITUDE_WARPING', True):
-		mw_filtered, mw_kin, mw_classes = [], [], []
-		for filt_b, kin_b, cls in zip(filtered_emg, all_kin_bursts, all_classes):
-			mw_filtered.append(filt_b)
-			mw_kin.append(kin_b)
-			mw_classes.append(cls)
+		base_count = len(base_emg_bursts)
+		mw_filtered = list(filtered_emg)
+		mw_kin = list(kin_bursts)
+		mw_classes = list(classes_only)
+		for filt_b, kin_b, cls in zip(filtered_emg[:base_count], base_kin_bursts, base_classes):
 			mw_filtered.append(np.clip(apply_magnitude_warping(filt_b, sigma=0.1), 0.0, 1.0))
 			mw_kin.append(np.asarray(kin_b, dtype=np.float32))
 			mw_classes.append(cls)
-		filtered_emg, all_kin_bursts, all_classes = mw_filtered, mw_kin, mw_classes
+		filtered_emg, kin_bursts, classes_only = mw_filtered, mw_kin, mw_classes
 
 	if should_shuffle_segment_blocks:
-		_shuffle_segment_lists_in_place(filtered_emg, all_kin_bursts, all_classes, block_shuffle_rng)
+		_shuffle_segment_lists_in_place(filtered_emg, kin_bursts, classes_only, block_shuffle_rng)
 
 	continuous_X, continuous_y, segment_bounds, segment_classes = _concat_segments(
-		filtered_emg, all_kin_bursts, all_classes
+		filtered_emg, kin_bursts, classes_only
 	)
 	if continuous_X is None:
 		print(f"[Collected Data] No valid continuous data from {folder_path}")

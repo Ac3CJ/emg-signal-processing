@@ -21,13 +21,21 @@ def _resolve_validation_dir(run_name):
     return os.path.join('./neural-network-models', sanitized, 'validation')
 
 
-def _list_prediction_files(validation_dir):
+def _list_prediction_files(validation_dir, smooth_tag=None):
     if not os.path.isdir(validation_dir):
         return []
-    return sorted(
-        f for f in os.listdir(validation_dir)
-        if f.endswith('_predictions.csv')
-    )
+    files = []
+    for f in os.listdir(validation_dir):
+        if not f.endswith('_predictions.csv'):
+            continue
+        if smooth_tag is not None:
+            if not f.startswith(f'smooth{smooth_tag}_'):
+                continue
+        else:
+            if f.startswith('smooth'):
+                continue
+        files.append(f)
+    return sorted(files)
 
 
 def _load_predictions_csv(path):
@@ -221,10 +229,12 @@ def main():
     parser = argparse.ArgumentParser(description='Visualise kinematic predictions with latency peak markers.')
     parser.add_argument('--name', type=str, required=True,
                         help='Run name (validation CSVs live in ./neural-network-models/<name>/validation/).')
+    parser.add_argument('--smooth', type=str, default=None, metavar='TAG',
+                        help='Smooth tag to visualise (e.g. "02"). Shows only smooth{TAG}_* files. Default: raw files only.')
     args = parser.parse_args()
 
     validation_dir = _resolve_validation_dir(args.name)
-    files = _list_prediction_files(validation_dir)
+    files = _list_prediction_files(validation_dir, smooth_tag=args.smooth)
     if not files:
         print(f"No *_predictions.csv files found in {validation_dir}")
         return

@@ -9,6 +9,7 @@ import time
 import os
 import re
 import csv
+import json
 
 import DataPreparation
 import ControllerConfiguration as Config
@@ -16,6 +17,66 @@ import NeuralNetworkModels as NNModels
 from FileRepository import DataRepository
 
 REPOSITORY = DataRepository()
+
+# ====================================================================================
+# ============================== MODEL REGISTRY ======================================
+# ====================================================================================
+# Maps a model_type string to (model_class, dataset_class). Dataset class is part of
+# the registry entry so model/dataset pairing is explicit (some models need 2D input).
+# Unknown keys raise an explicit error at lookup time — no silent fallback.
+
+MODEL_REGISTRY = {
+    'rcnn': (NNModels.ShoulderRCNN, NNModels.ContinuousEMGDataset),
+    'naive_ann': (NNModels.NaiveANN, NNModels.ContinuousEMGDataset),
+    'rnn': (NNModels.ShoulderRNN, NNModels.ContinuousEMGDataset),
+    'lstm': (NNModels.ShoulderLSTM, NNModels.ContinuousEMGDataset),
+    '1dcnn': (NNModels.Shoulder1DCNN, NNModels.ContinuousEMGDataset),
+}
+
+try:
+    from Model2DCNN import EMG2DCNN, EMG2DDataset
+    MODEL_REGISTRY['2dcnn'] = (EMG2DCNN, EMG2DDataset)
+except ImportError:
+    pass
+
+
+def _resolve_model_entry(model_type):
+    """Looks up (model_class, dataset_class) in MODEL_REGISTRY or raises."""
+    key = str(model_type).strip().lower()
+    if key not in MODEL_REGISTRY:
+        available = ", ".join(sorted(MODEL_REGISTRY.keys()))
+        raise KeyError(
+            f"Unknown model_type '{model_type}'. Available: [{available}]."
+        )
+    return MODEL_REGISTRY[key]
+
+
+def _instantiate_model(model_class, num_channels, num_outputs, window_size):
+    """Calls a registered model class with whichever of the standard kwargs it accepts."""
+    import inspect
+    sig = inspect.signature(model_class.__init__)
+    kwargs = {'num_channels': num_channels, 'num_outputs': num_outputs}
+    if 'window_size' in sig.parameters:
+        kwargs['window_size'] = window_size
+    return model_class(**kwargs)
+
+
+def _run_config_path(model_save_path):
+    """Returns the sidecar JSON path next to a model checkpoint."""
+    return os.path.splitext(model_save_path)[0] + '_run_config.json'
+
+
+def _save_run_config(model_save_path, model_type, window_size, increment):
+    """Writes a sidecar JSON capturing instantiation-relevant Config at training time."""
+    payload = {
+        'model_type': model_type,
+        'WINDOW_SIZE': int(window_size),
+        'INCREMENT': int(increment),
+        'NUM_CHANNELS': int(Config.NUM_CHANNELS),
+        'NUM_OUTPUTS': int(Config.NUM_OUTPUTS),
+    }
+    with open(_run_config_path(model_save_path), 'w') as f:
+        json.dump(payload, f, indent=2)
 
 # GPU Optimization Settings
 torch.backends.cudnn.benchmark = True
@@ -210,9 +271,10 @@ def _build_data_loader(dataset, batch_size, shuffle, num_workers=None, sampler=N
     return DataLoader(dataset, **loader_kwargs)
 
 
-def _build_continuous_dataset(continuous_X, continuous_y, segment_bounds, window_size, step_size, active_channels):
-    """Wraps inputs into a ContinuousEMGDataset using explicit segment bounds."""
-    return NNModels.ContinuousEMGDataset(
+def _build_continuous_dataset(continuous_X, continuous_y, segment_bounds, window_size, step_size, active_channels,
+                              dataset_class=NNModels.ContinuousEMGDataset):
+    """Wraps inputs into the requested dataset class using explicit segment bounds."""
+    return dataset_class(
         continuous_X=np.asarray(continuous_X, dtype=np.float32),
         continuous_y=np.asarray(continuous_y, dtype=np.float32),
         window_size=int(window_size),
@@ -247,8 +309,11 @@ def train_model(
     model_save_path=None,
     loss_curve_path=None,
     training_log_path=None,
+    model_type='rcnn',
 ):
-    """Trains the PyTorch RCNN model with on-the-fly windowing and contraction-block shuffling."""
+    """Trains a registered model with on-the-fly windowing and contraction-block shuffling."""
+    model_class, dataset_class = _resolve_model_entry(model_type)
+
     resolved_model_path = model_save_path or Config.MODEL_SAVE_PATH
     resolved_loss_curve_path = loss_curve_path or 'training_loss_curve.png'
     resolved_training_log_path = training_log_path or 'training_log.csv'
@@ -256,13 +321,16 @@ def train_model(
     resolved_step_size = int(step_size if step_size is not None else Config.INCREMENT)
 
     train_dataset = _build_continuous_dataset(
-        X_train, y_train, train_bounds, resolved_window_size, resolved_step_size, active_channels
+        X_train, y_train, train_bounds, resolved_window_size, resolved_step_size, active_channels,
+        dataset_class=dataset_class,
     )
     val_dataset = _build_continuous_dataset(
-        X_val, y_val, val_bounds, resolved_window_size, resolved_step_size, active_channels
+        X_val, y_val, val_bounds, resolved_window_size, resolved_step_size, active_channels,
+        dataset_class=dataset_class,
     )
 
-    model_num_channels = len(train_dataset.active_channels)
+    inner_dataset = getattr(train_dataset, '_inner', train_dataset)
+    model_num_channels = len(inner_dataset.active_channels)
     model_num_outputs = int(np.asarray(y_train).shape[1])
 
     loader_workers = Config.NUM_DATA_WORKERS
@@ -272,7 +340,7 @@ def train_model(
     train_sampler = None
     if _is_contraction_block_shuffle_enabled():
         train_sampler = ContractionBlockSampler(
-            segment_window_spans=train_dataset.get_segment_window_spans(),
+            segment_window_spans=inner_dataset.get_segment_window_spans(),
             seed=_resolve_contraction_block_shuffle_seed(),
         )
 
@@ -285,16 +353,19 @@ def train_model(
     device, device_type = _resolve_training_device()
 
     print(f"\n[{'-'*10} SYSTEM CHECK {'-'*10}]")
+    print(f"Model: {model_class.__name__} (model_type='{model_type}')")
     print(f"Training on device: {device}")
     print(f"Window size: {resolved_window_size} | Step size: {resolved_step_size}")
-    print(f"Train segments: {len(train_dataset.get_segment_window_spans())} | "
+    print(f"Train segments: {len(inner_dataset.get_segment_window_spans())} | "
           f"Train windows: {len(train_dataset)} | Val windows: {len(val_dataset)}")
     print(f"Batch size: {batch_size} | Gradient Accumulation: {Config.GRADIENT_ACCUMULATION_STEPS}")
     print(f"Data workers: {loader_workers} | Prefetch: {Config.PREFETCH_FACTOR if loader_workers > 0 else 'N/A'}")
     print(f"Contraction-block shuffling: {'enabled' if train_sampler is not None else 'disabled'}")
     print(f"Effective batch size: {batch_size * Config.GRADIENT_ACCUMULATION_STEPS}")
 
-    model = NNModels.ShoulderRCNN(num_channels=model_num_channels, num_outputs=model_num_outputs).to(device)
+    model = _instantiate_model(
+        model_class, model_num_channels, model_num_outputs, resolved_window_size,
+    ).to(device)
 
     optimizer_criterion = nn.MSELoss()
     tracker_criterion = nn.L1Loss()
@@ -375,6 +446,7 @@ def train_model(
             best_epoch = epoch
             os.makedirs(os.path.dirname(resolved_model_path) or '.', exist_ok=True)
             torch.save(model.state_dict(), resolved_model_path)
+            _save_run_config(resolved_model_path, model_type, resolved_window_size, resolved_step_size)
             status = "--> Saved Best Model"
         else:
             epochs_no_improve += 1
@@ -420,16 +492,23 @@ def train_model(
 # ============================== TRANSFER LEARNING ===================================
 # ====================================================================================
 
-def freeze_backbone(model, num_unfreeze_layers=2):
-    """Freezes all but the last `num_unfreeze_layers` layers."""
-    named_params = list(model.named_parameters())
-    num_to_freeze = len(named_params) - num_unfreeze_layers
-    for i, (name, param) in enumerate(named_params):
-        param.requires_grad = i >= num_to_freeze
-    print(f"\n[Transfer Learning] Froze {num_to_freeze} layers, unfroze {num_unfreeze_layers} layers")
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f"Trainable parameters: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.1f}%)")
+_UNFREEZE_MODULES = {'fc1', 'fc_yaw', 'fc_pitch', 'fc_roll', 'fc_elbow'}
+
+
+def freeze_backbone(model):
+    """Freezes all backbone layers, unfreezing only the shared dense layer and all 4 DOF heads."""
+    for param in model.parameters():
+        param.requires_grad = False
+    for module_name, module in model.named_modules():
+        if module_name in _UNFREEZE_MODULES:
+            for param in module.parameters():
+                param.requires_grad = True
+    trainable = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
+    trainable_count = sum(p.numel() for _, p in trainable)
+    total_count = sum(p.numel() for p in model.parameters())
+    print(f"\n[Transfer Learning] Frozen backbone. Trainable modules: {_UNFREEZE_MODULES}")
+    print(f"Trainable named params: {[n for n, _ in trainable]}")
+    print(f"Trainable parameters: {trainable_count:,} / {total_count:,} ({100*trainable_count/total_count:.1f}%)")
 
 
 def train_transfer_learning(
@@ -441,8 +520,16 @@ def train_transfer_learning(
     model_save_path=None,
     loss_curve_path=None,
     training_log_path=None,
+    model_type='rcnn',
 ):
-    """Fine-tunes a pretrained model on new collected data."""
+    """Fine-tunes a pretrained model on new collected data.
+
+    Transfer learning is RCNN-only by design today (the canonical pretrained
+    weight file targets the RCNN architecture). The model_type parameter is
+    plumbed through for future generalisation but defaults to 'rcnn'.
+    """
+    model_class, dataset_class = _resolve_model_entry(model_type)
+
     resolved_model_path = model_save_path or Config.TRANSFER_LEARNING_MODEL_SAVE_PATH
     resolved_loss_curve_path = loss_curve_path or 'training_loss_curve.png'
     resolved_training_log_path = training_log_path or 'training_log.csv'
@@ -457,13 +544,16 @@ def train_transfer_learning(
     resolved_step_size = int(step_size if step_size is not None else Config.INCREMENT)
 
     train_dataset = _build_continuous_dataset(
-        X_train, y_train, train_bounds, resolved_window_size, resolved_step_size, active_channels
+        X_train, y_train, train_bounds, resolved_window_size, resolved_step_size, active_channels,
+        dataset_class=dataset_class,
     )
     val_dataset = _build_continuous_dataset(
-        X_val, y_val, val_bounds, resolved_window_size, resolved_step_size, active_channels
+        X_val, y_val, val_bounds, resolved_window_size, resolved_step_size, active_channels,
+        dataset_class=dataset_class,
     )
 
-    model_num_channels = len(train_dataset.active_channels)
+    inner_dataset = getattr(train_dataset, '_inner', train_dataset)
+    model_num_channels = len(inner_dataset.active_channels)
     model_num_outputs = int(np.asarray(y_train).shape[1])
 
     loader_workers = Config.NUM_DATA_WORKERS
@@ -473,7 +563,7 @@ def train_transfer_learning(
     train_sampler = None
     if _is_contraction_block_shuffle_enabled():
         train_sampler = ContractionBlockSampler(
-            segment_window_spans=train_dataset.get_segment_window_spans(),
+            segment_window_spans=inner_dataset.get_segment_window_spans(),
             seed=_resolve_contraction_block_shuffle_seed(),
         )
 
@@ -486,6 +576,7 @@ def train_transfer_learning(
     device, device_type = _resolve_training_device()
 
     print(f"\n[{'-'*10} TRANSFER LEARNING SETUP {'-'*10}]")
+    print(f"Model: {model_class.__name__} (model_type='{model_type}')")
     print(f"Loading pretrained model from: {pretrained_model_path}")
     print(f"Training on device: {device}")
     print(f"Window size: {resolved_window_size} | Step size: {resolved_step_size}")
@@ -494,7 +585,9 @@ def train_transfer_learning(
     print(f"Contraction-block shuffling: {'enabled' if train_sampler is not None else 'disabled'}")
     print(f"Learning rate: {Config.TRANSFER_LEARNING_LEARNING_RATE}")
 
-    model = NNModels.ShoulderRCNN(num_channels=model_num_channels, num_outputs=model_num_outputs).to(device)
+    model = _instantiate_model(
+        model_class, model_num_channels, model_num_outputs, resolved_window_size,
+    ).to(device)
     try:
         model.load_state_dict(torch.load(pretrained_model_path, map_location=device))
         print(f"✓ Successfully loaded pretrained weights from {pretrained_model_path}")
@@ -502,8 +595,8 @@ def train_transfer_learning(
         print(f"✗ ERROR loading pretrained model: {e}")
         return None
 
-    if freeze_layers and Config.FREEZE_BACKBONE_LAYERS:
-        freeze_backbone(model, num_unfreeze_layers=Config.NUM_LAYERS_TO_UNFREEZE)
+    if freeze_layers:
+        freeze_backbone(model)
     else:
         print("[Transfer Learning] Training all layers (no freezing)")
 
@@ -589,6 +682,7 @@ def train_transfer_learning(
             best_epoch = epoch
             os.makedirs(os.path.dirname(resolved_model_path) or '.', exist_ok=True)
             torch.save(model.state_dict(), resolved_model_path)
+            _save_run_config(resolved_model_path, model_type, resolved_window_size, resolved_step_size)
             status = "--> Saved Best Model"
         else:
             epochs_no_improve += 1
@@ -802,6 +896,7 @@ def loso_pipeline(
     on_the_fly_step_size,
     selected_active_channels,
     run_paths,
+    model_type='rcnn',
 ):
     """Implements the Leave-One-Subject-Out training pipeline."""
     print("Loading dataset with Leave-One-Subject-Out Validation...")
@@ -868,6 +963,7 @@ def loso_pipeline(
         model_save_path=run_paths['model_path'],
         loss_curve_path=run_paths['loss_curve_path'],
         training_log_path=run_paths['training_log_path'],
+        model_type=model_type,
     )
     save_dataset_distribution(train_classes, val_classes, output_file=run_paths['distribution_path'])
 
@@ -967,6 +1063,7 @@ def standard_pipeline(
     on_the_fly_step_size,
     selected_active_channels,
     run_paths,
+    model_type='rcnn',
 ):
     """Implements the standard 80-20 train/validation pipeline."""
     print("Loading dataset with Standard 80-20 Training-Validation Split...")
@@ -1031,6 +1128,7 @@ def standard_pipeline(
         model_save_path=run_paths['model_path'],
         loss_curve_path=run_paths['loss_curve_path'],
         training_log_path=run_paths['training_log_path'],
+        model_type=model_type,
     )
     save_dataset_distribution(train_classes, val_classes, output_file=run_paths['distribution_path'])
 
@@ -1048,6 +1146,7 @@ def benchmark_pipeline(
     on_the_fly_step_size,
     selected_active_channels,
     run_paths,
+    model_type='rcnn',
 ):
     """Train on all valid secondary + handpicked collected; validate on held-out collected.
 
@@ -1135,6 +1234,7 @@ def benchmark_pipeline(
         model_save_path=run_paths['model_path'],
         loss_curve_path=run_paths['loss_curve_path'],
         training_log_path=run_paths['training_log_path'],
+        model_type=model_type,
     )
     save_dataset_distribution(train_classes, val_classes, output_file=run_paths['distribution_path'])
     print(f"\n[Benchmark] Done. Model + training artifacts saved under: {run_paths['training_dir']}")
@@ -1145,7 +1245,7 @@ def _build_arg_parser():
     """Builds the CLI parser for training mode selection."""
     import argparse
 
-    parser = argparse.ArgumentParser(description="Train ShoulderRCNN model")
+    parser = argparse.ArgumentParser(description="Train a registered shoulder regression model")
     parser.add_argument('--name', type=str, required=True,
                        help='Run name. Outputs go to ./neural-network-models/<name>/training/.')
     parser.add_argument('--mode', type=str, choices=['loso', 'transfer', 'standard', 'benchmark'], default='loso',
@@ -1160,6 +1260,9 @@ def _build_arg_parser():
                        help='Optional collected participant list, e.g. "[1,2,4]".')
     parser.add_argument('--collected_train_participants', type=str, default=None,
                        help='Optional participant list for collected transfer split, e.g. "[1,2,4]".')
+    parser.add_argument('--model', type=str, default='rcnn',
+                       choices=sorted(MODEL_REGISTRY.keys()),
+                       help='Model architecture key from MODEL_REGISTRY (default: rcnn).')
     return parser
 
 
@@ -1211,6 +1314,7 @@ def main():
             on_the_fly_step_size,
             selected_active_channels,
             run_paths,
+            model_type=args.model,
         )
     elif args.mode == 'transfer':
         transfer_pipeline(
@@ -1229,6 +1333,7 @@ def main():
             on_the_fly_step_size,
             selected_active_channels,
             run_paths,
+            model_type=args.model,
         )
     elif args.mode == 'benchmark':
         benchmark_pipeline(
@@ -1236,6 +1341,7 @@ def main():
             on_the_fly_step_size,
             selected_active_channels,
             run_paths,
+            model_type=args.model,
         )
 
 

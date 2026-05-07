@@ -155,7 +155,7 @@ def _filter_burst_wavelet(raw_burst, channel_minmax):
 # EXPERIMENT RUNNER
 # ====================================================================================
 
-def _run_experiment(run_name, config_overrides=None, filter_fn_override=None):
+def _run_experiment(run_name, config_overrides=None, filter_fn_override=None, model_type='rcnn'):
     _reset_to_base()
 
     if config_overrides:
@@ -167,6 +167,7 @@ def _run_experiment(run_name, config_overrides=None, filter_fn_override=None):
 
     print(f"\n{'=' * 70}")
     print(f"  EXPERIMENT: {run_name}")
+    print(f"  MODEL={model_type}")
     print(f"  WINDOW={Config.WINDOW_SIZE}  INCREMENT={Config.INCREMENT}")
     print(f"  MIXUP_RATIO={Config.MIXUP_RATIO}  "
           f"NOISE={Config.TRAINING_NOISE_MAGNITUDES}  "
@@ -185,6 +186,7 @@ def _run_experiment(run_name, config_overrides=None, filter_fn_override=None):
         on_the_fly_step_size=Config.INCREMENT,
         selected_active_channels=None,
         run_paths=run_paths,
+        model_type=model_type,
     )
 
     ModelValidator.run_all_validation(
@@ -194,6 +196,7 @@ def _run_experiment(run_name, config_overrides=None, filter_fn_override=None):
         model_name=run_name,
         collected_base=Config.COLLECTED_DATA_PATH,
         secondary_base=Config.SECONDARY_DATA_PATH,
+        model_type=model_type,
     )
 
     print(f"\n[BatchSweep] Completed: {run_name}\n")
@@ -250,11 +253,23 @@ FILTER_ABLATION = [
     ('filter_no_filtering',     {},   _filter_burst_no_filtering),
 ]
 
+# Architecture ablation: base config (500 ms / 62 ms, full filter pipeline, all augs ON);
+# only the model architecture varies. Run name encodes the registry key.
+# Entries are 4-tuples: (run_name, config_overrides, filter_fn, model_type).
+ARCH_ABLATION = [
+    # ('arch_rcnn',      {}, None, 'rcnn'),
+    # ('arch_rnn',       {}, None, 'rnn'),
+    ('arch_lstm',      {}, None, 'lstm'),
+    ('arch_1dcnn',     {}, None, '1dcnn'),
+    ('arch_naive_ann', {}, None, 'naive_ann'),
+]
+
 ALL_GROUPS = {
     'step':    STEP_ABLATION,
     'window':  WINDOW_ABLATION,
     'augment': AUGMENTATION_ABLATION,
     'filter':  FILTER_ABLATION,
+    'arch':    ARCH_ABLATION,
 }
 
 # ====================================================================================
@@ -268,7 +283,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--groups', nargs='+',
-        default=['step', 'window', 'augment', 'filter'],
+        default=['step', 'window', 'augment', 'filter', 'arch'],
         choices=list(ALL_GROUPS.keys()),
         help='Ablation groups to run (default: all).',
     )
@@ -282,10 +297,15 @@ if __name__ == '__main__':
         print(f"\n{'#' * 70}")
         print(f"  GROUP: {group_name.upper()}  ({len(experiments)} experiments)")
         print(f"{'#' * 70}")
-        for run_name, config_overrides, filter_fn in experiments:
+        for entry in experiments:
+            if len(entry) == 4:
+                run_name, config_overrides, filter_fn, model_type = entry
+            else:
+                run_name, config_overrides, filter_fn = entry
+                model_type = 'rcnn'
             done += 1
             print(f"\n[BatchSweep] Progress: {done}/{total}")
-            _run_experiment(run_name, config_overrides, filter_fn)
+            _run_experiment(run_name, config_overrides, filter_fn, model_type=model_type)
 
     print(f"\n{'#' * 70}")
     print(f"  [BatchSweep] All {done} experiments complete.")

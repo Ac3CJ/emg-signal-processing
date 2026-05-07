@@ -6,12 +6,19 @@ Collects per-trial validation metrics and writes per-ablation summary CSVs.
 Usage:
     python AblationMetricsCollator.py
     python AblationMetricsCollator.py --prefixes step window augment filter
+    python AblationMetricsCollator.py --smooth 02
 
-Inputs are the validation CSVs produced by ModelValidator:
+Inputs (raw, default):
     ./neural-network-models/<run>/validation/c_all_metrics.csv
     ./neural-network-models/<run>/validation/s_all_metrics.csv
 
-If those are missing, the script falls back to individual *_metrics.csv files.
+Inputs (--smooth <tag>):
+    ./neural-network-models/<run>/validation/smooth{tag}_c_all_metrics.csv
+    ./neural-network-models/<run>/validation/smooth{tag}_s_all_metrics.csv
+
+If the primary aggregate files are missing, the script falls back to individual
+*_metrics.csv files — filtered to the same prefix (raw or smooth{tag}) to prevent
+mixing.
 """
 
 import argparse
@@ -27,6 +34,11 @@ METRIC_COLUMNS = [
     'Yaw_rmse',
     'Pitch_rmse',
     'mean_abs_latency_ms',
+]
+
+DERIVED_COLUMNS = [
+    'avg_r2',
+    'avg_rmse',
 ]
 
 CATEGORY_ORDER = [
@@ -79,9 +91,18 @@ def _load_metrics_file(path):
     return rows
 
 
-def _load_metrics_rows(validation_dir):
+def _load_metrics_rows(validation_dir, smooth_tag=None):
     rows = []
-    for name in ('c_all_metrics.csv', 's_all_metrics.csv'):
+
+    if smooth_tag is not None:
+        primary_names = (
+            f'smooth{smooth_tag}_c_all_metrics.csv',
+            f'smooth{smooth_tag}_s_all_metrics.csv',
+        )
+    else:
+        primary_names = ('c_all_metrics.csv', 's_all_metrics.csv')
+
+    for name in primary_names:
         path = os.path.join(validation_dir, name)
         if os.path.exists(path):
             rows.extend(_load_metrics_file(path))
@@ -92,17 +113,25 @@ def _load_metrics_rows(validation_dir):
     if not os.path.isdir(validation_dir):
         return []
 
-    skip_names = {
+    always_skip = {
         'c_all_metrics.csv',
         's_all_metrics.csv',
         'c_benchmark_metrics.csv',
         's_predefined_metrics.csv',
     }
+    smooth_prefix = f'smooth{smooth_tag}_' if smooth_tag is not None else None
+
     for name in os.listdir(validation_dir):
-        if name in skip_names:
+        if name in always_skip:
             continue
         if not name.endswith('_metrics.csv'):
             continue
+        if smooth_tag is not None:
+            if not name.startswith(smooth_prefix):
+                continue
+        else:
+            if name.startswith('smooth'):
+                continue
         rows.extend(_load_metrics_file(os.path.join(validation_dir, name)))
 
     return rows
@@ -171,6 +200,12 @@ def _summarize_run(run_name, rows, collected_benchmark, secondary_benchmark):
     for category in CATEGORY_ORDER:
         for key in METRIC_COLUMNS:
             row[f'{category}_{key}'] = summaries[category].get(key, np.nan)
+        yaw_r2 = summaries[category].get('Yaw_r2', np.nan)
+        pitch_r2 = summaries[category].get('Pitch_r2', np.nan)
+        yaw_rmse = summaries[category].get('Yaw_rmse', np.nan)
+        pitch_rmse = summaries[category].get('Pitch_rmse', np.nan)
+        row[f'{category}_avg_r2'] = float(np.nanmean([yaw_r2, pitch_r2])) if not np.isnan(yaw_r2) or not np.isnan(pitch_r2) else np.nan
+        row[f'{category}_avg_rmse'] = float(np.nanmean([yaw_rmse, pitch_rmse])) if not np.isnan(yaw_rmse) or not np.isnan(pitch_rmse) else np.nan
     return row
 
 
@@ -188,6 +223,7 @@ def _write_summary_csv(output_path, rows):
     header = ['test_name']
     for category in CATEGORY_ORDER:
         header.extend([f'{category}_{key}' for key in METRIC_COLUMNS])
+        header.extend([f'{category}_{key}' for key in DERIVED_COLUMNS])
 
     with open(output_path, 'w', newline='') as f:
         writer = csv.writer(f)
@@ -235,11 +271,20 @@ def main():
         default=[8],
         help='Secondary benchmark participants (default: 8).',
     )
+    parser.add_argument(
+        '--smooth',
+        type=str,
+        default=None,
+        metavar='TAG',
+        help='Smooth tag to collate (e.g. "02"). Uses smooth{TAG}_c/s_all_metrics.csv as primary source. Default: raw files only.',
+    )
     args = parser.parse_args()
 
     root_dir = _resolve_root(args.root)
     output_dir = args.output_dir or os.path.join(root_dir, 'summary-csv')
     os.makedirs(output_dir, exist_ok=True)
+
+    smooth_tag = args.smooth
 
     run_names = _list_run_dirs(root_dir)
     grouped = _group_by_prefix(run_names)
@@ -255,7 +300,7 @@ def main():
         summary_rows = []
         for run_name in runs:
             validation_dir = _validation_dir(root_dir, run_name)
-            rows = _load_metrics_rows(validation_dir)
+            rows = _load_metrics_rows(validation_dir, smooth_tag=smooth_tag)
             if not rows:
                 print(f'[WARN] No metrics found for {run_name} in {validation_dir}')
                 continue

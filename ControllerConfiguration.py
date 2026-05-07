@@ -20,7 +20,7 @@ NUM_OUTPUTS = 4             # Output DOFs: [Yaw, Pitch, Roll, Elbow]
 
 WINDOW_SIZE = 100           # GOOD: 100 ms window size
 INCREMENT = 15              # GOOD: 15 ms step size
-SMOOTHING_ALPHA = 0.1       # Exponential moving average factor for kinematic output (0.0 to 1.0)
+SMOOTHING_ALPHA = 0.1       # EMA factor — retained for reference. Not applied in validation or live controller; smoothing is Unity's responsibility.
 WARMUP_SECONDS = 0.5        # Skip emitting predictions until this much real data has streamed in (online + offline).
 
 # Controls the training windowing strategy.
@@ -72,11 +72,11 @@ ENABLE_MAGNITUDE_WARPING = True  # Set False in ablation studies to isolate othe
 # ====================================================================================
 # 5. NEURAL NETWORK TRAINING PARAMETERS
 # ====================================================================================
-EPOCHS = 50
+EPOCHS = 400
 BATCH_SIZE = 512            # Reduced for 16GB RAM constraint (was 1280)
 GRADIENT_ACCUMULATION_STEPS = 1  # Accumulate 2 batches = effective batch of 1024 without RAM spike
 NUM_DATA_WORKERS = 1        # Reduced for RAM (was 4)
-PATIENCE = 10               # Early stopping patience
+PATIENCE = 20               # Early stopping patience
 LEARNING_RATE = 0.001
 LR_SCHEDULER_FACTOR = 0.5  # Reduce LR by this factor when plateau detected
 LR_SCHEDULER_PATIENCE = 5  # Wait this many epochs before reducing LR
@@ -86,8 +86,8 @@ PREFETCH_FACTOR = 1         # Reduced for RAM (was 2)
 # ====================================================================================
 # 5b. TRANSFER LEARNING PARAMETERS
 # ====================================================================================
-TRANSFER_LEARNING_EPOCHS = 75       # Fewer epochs needed for fine-tuning
-TRANSFER_LEARNING_LEARNING_RATE = 0.0001  # Lower learning rate for fine-tuning
+TRANSFER_LEARNING_EPOCHS = 200       # Fewer epochs needed for fine-tuning
+TRANSFER_LEARNING_LEARNING_RATE = 0.00025  # Lower learning rate for fine-tuning
 TRANSFER_LEARNING_BATCH_SIZE = 128  # Smaller batch size for collected data
 TRANSFER_LEARNING_PATIENCE = 20     # Early stopping patience for transfer learning
 FREEZE_BACKBONE_LAYERS = False       # Freeze convolutional layers

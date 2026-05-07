@@ -38,7 +38,9 @@ class EMG2DCNN(nn.Module):
         self.fc_out = nn.Linear(32, num_outputs)
 
     def forward(self, x):
-        # x: (batch, 1, C, W)
+        # x: (batch, 1, C, W) from EMG2DDataset, or (batch, C, W) from validator — normalise to 4D
+        if x.dim() == 3:
+            x = x.unsqueeze(1)
         x = self.relu(self.conv1(x))
         x = self.pool1(x)
         x = self.relu(self.conv2(x))

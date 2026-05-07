@@ -129,9 +129,6 @@ class RealTimeProstheticController:
         self.warmup_samples_required = int(getattr(Config, 'WARMUP_SECONDS', 0.0) * Config.FS)
         self.real_samples_seen = 0
 
-        self.alpha = Config.SMOOTHING_ALPHA
-        self.smoothed_output = np.zeros(Config.NUM_OUTPUTS)
-        
         # Kinematics history for telemetry
         self.kin_window_ms = 1500
         self.kinematic_history_len = int(self.kin_window_ms / 1000.0 * Config.FS / Config.INCREMENT)
@@ -479,8 +476,7 @@ class RealTimeProstheticController:
         with torch.no_grad():
             raw_predictions = self.model(input_tensor).cpu().numpy()[0]
 
-        self.smoothed_output = (self.alpha * raw_predictions) + ((1 - self.alpha) * self.smoothed_output)
-        yaw, pitch, roll, elbow = self.smoothed_output
+        yaw, pitch, roll, elbow = raw_predictions
 
         self.yaw_history = np.roll(self.yaw_history, -1)
         self.yaw_history[-1] = yaw
@@ -497,7 +493,7 @@ class RealTimeProstheticController:
             try:
                 self.data_queue.put_nowait({
                     'emg': emg_window.copy(),
-                    'pred': self.smoothed_output.copy(),
+                    'pred': raw_predictions.copy(),
                     'yaw_history': self.yaw_history.copy(),
                     'pitch_history': self.pitch_history.copy(),
                 })
@@ -761,7 +757,6 @@ class SignalViewerGUI(_QMainWindowBase):
     def update_visualization(self, data_dict):
         """Update all plots with latest data from producer."""
         emg_window = data_dict['emg']
-        smoothed_output = data_dict['pred']
         yaw_history = data_dict['yaw_history']
         pitch_history = data_dict['pitch_history']
         

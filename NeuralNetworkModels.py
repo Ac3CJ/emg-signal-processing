@@ -331,3 +331,142 @@ class ShoulderRCNN(nn.Module):
 
         # Concatenate them back together to match the (Batch, 4) target tensor shape
         return torch.cat([yaw, pitch, roll, elbow], dim=1)
+
+
+# ====================================================================================
+# ============================== COMPARISON ARCHITECTURES ============================
+# ====================================================================================
+# Each comparison model accepts (Batch, num_channels, window_size) input and returns
+# (Batch, num_outputs) regression outputs, matching the ShoulderRCNN contract so a
+# single ContinuousEMGDataset can feed all of them.
+
+class _DecoupledRegressionHeads(nn.Module):
+    """Four independent Linear(in,1) heads concatenated to (Batch, 4)."""
+
+    def __init__(self, in_features, num_outputs):
+        super().__init__()
+        self.heads = nn.ModuleList([nn.Linear(in_features, 1) for _ in range(num_outputs)])
+
+    def forward(self, x):
+        return torch.cat([head(x) for head in self.heads], dim=1)
+
+
+class NaiveANN(nn.Module):
+    """Naive feed-forward baseline (Togo et al., 2021).
+
+    Computes the rFFT magnitude spectrum inside forward() and feeds it through a
+    single hidden layer whose width scales with channel count, then through four
+    decoupled regression heads. The original Togo network targeted classification;
+    here the classification head is replaced by 4 regression outputs to match the
+    shoulder-prosthetics output contract.
+    """
+
+    HIDDEN_PER_CHANNEL = 16
+
+    def __init__(self, num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS,
+                 window_size=Config.WINDOW_SIZE):
+        super().__init__()
+        self.num_channels = int(num_channels)
+        self.num_outputs = int(num_outputs)
+        self.window_size = int(window_size)
+        # rFFT of length N produces N//2 + 1 complex bins; magnitudes preserve that count.
+        self.fft_bins = self.window_size // 2 + 1
+        self.hidden_size = self.HIDDEN_PER_CHANNEL * self.num_channels
+        self.input_layer = nn.Linear(self.num_channels * self.fft_bins, self.hidden_size)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(p=0.3)
+        self.heads = _DecoupledRegressionHeads(self.hidden_size, self.num_outputs)
+
+    def forward(self, x):
+        # x: (Batch, Channels, Seq_Len)
+        spectrum = torch.fft.rfft(x, dim=-1)
+        magnitudes = torch.abs(spectrum)
+        flat = magnitudes.flatten(start_dim=1)
+        h = self.relu(self.input_layer(flat))
+        h = self.dropout(h)
+        return self.heads(h)
+
+
+class ShoulderRNN(nn.Module):
+    """Vanilla RNN architectural ablation.
+
+    This model is included as an internal architectural ablation to isolate the
+    contribution of the LSTM gating mechanism in the recurrent backbone. It is
+    not a literature-grounded baseline.
+    """
+
+    def __init__(self, num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS,
+                 hidden_size=64, num_layers=1):
+        super().__init__()
+        self.rnn = nn.RNN(
+            input_size=int(num_channels),
+            hidden_size=int(hidden_size),
+            num_layers=int(num_layers),
+            batch_first=True,
+        )
+        self.dropout = nn.Dropout(p=0.3)
+        self.heads = _DecoupledRegressionHeads(int(hidden_size), int(num_outputs))
+
+    def forward(self, x):
+        # x: (Batch, Channels, Seq_Len) -> (Batch, Seq_Len, Channels)
+        x = x.permute(0, 2, 1)
+        out, _ = self.rnn(x)
+        last = out[:, -1, :]
+        return self.heads(self.dropout(last))
+
+
+class ShoulderLSTM(nn.Module):
+    """Pure LSTM regressor (Naoki et al., 2022).
+
+    A shared LSTM backbone followed by four decoupled regression heads. Used as
+    a literature-grounded baseline against the convolution-augmented RCNN.
+    """
+
+    def __init__(self, num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS,
+                 hidden_size=64, num_layers=2):
+        super().__init__()
+        self.lstm = nn.LSTM(
+            input_size=int(num_channels),
+            hidden_size=int(hidden_size),
+            num_layers=int(num_layers),
+            batch_first=True,
+        )
+        self.dropout = nn.Dropout(p=0.3)
+        self.heads = _DecoupledRegressionHeads(int(hidden_size), int(num_outputs))
+
+    def forward(self, x):
+        # x: (Batch, Channels, Seq_Len) -> (Batch, Seq_Len, Channels)
+        x = x.permute(0, 2, 1)
+        out, _ = self.lstm(x)
+        last = out[:, -1, :]
+        return self.heads(self.dropout(last))
+
+
+class Shoulder1DCNN(nn.Module):
+    """Lightweight 1D CNN regressor (Yang et al., 2022, approximated topology).
+
+    Three convolutional blocks with global average pooling, followed by a shared
+    dense layer and four decoupled regression heads.
+    """
+
+    def __init__(self, num_channels=Config.NUM_CHANNELS, num_outputs=Config.NUM_OUTPUTS):
+        super().__init__()
+        self.conv1 = nn.Conv1d(int(num_channels), 32, kernel_size=5, padding=2)
+        self.conv2 = nn.Conv1d(32, 64, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv1d(64, 128, kernel_size=3, padding=1)
+        self.pool = nn.MaxPool1d(kernel_size=2)
+        self.gap = nn.AdaptiveAvgPool1d(1)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(p=0.3)
+        self.fc = nn.Linear(128, 64)
+        self.heads = _DecoupledRegressionHeads(64, int(num_outputs))
+
+    def forward(self, x):
+        # x: (Batch, Channels, Seq_Len)
+        x = self.relu(self.conv1(x)); x = self.pool(x)
+        x = self.relu(self.conv2(x)); x = self.pool(x)
+        x = self.relu(self.conv3(x)); x = self.pool(x)
+        x = self.gap(x).squeeze(-1)  # (Batch, 128)
+        x = self.relu(self.fc(x))
+        x = self.dropout(x)
+        return self.heads(x)

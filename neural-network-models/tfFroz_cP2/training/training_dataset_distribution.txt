@@ -1,0 +1,23 @@
+=================================================================
+DATASET DISTRIBUTION ACROSS MOVEMENTS (contraction segments)
+=================================================================
+
+Movement             Index    Train        Val          Total   
+-----------------------------------------------------------------
+Flexion 45°          1        26           3            29      
+Flexion 90°          2        46           5            51      
+Flexion 110°         3        30           3            33      
+Hyperextension -30°  4        32           6            38      
+Abduction 45°        5        27           1            28      
+Abduction 90°        6        36           2            38      
+Elevation 45°        7        35           2            37      
+Elevation 90°        8        39           2            41      
+Rest                 9        264          52           316     
+-----------------------------------------------------------------
+TOTAL                         535          76           611     
+=================================================================
+
+Training segments: 535
+Validation segments: 76
+Total segments: 611
+Train/Val split: 87.6% / 12.4%

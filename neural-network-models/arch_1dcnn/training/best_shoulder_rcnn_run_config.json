@@ -1,0 +1,7 @@
+{
+  "model_type": "1dcnn",
+  "WINDOW_SIZE": 500,
+  "INCREMENT": 62,
+  "NUM_CHANNELS": 8,
+  "NUM_OUTPUTS": 4
+}

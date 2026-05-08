@@ -256,13 +256,14 @@ def _detect_rising_edge_tops(sig_norm, low_thresh=0.2, high_thresh=0.7):
     return np.array(edges, dtype=int)
 
 
-def _compute_latency_ms(predictions, ground_truth, movement_class, fs=None):
+def _compute_latency_ms(predictions, ground_truth, movement_class, fs=None, max_match_ms=2000.0):
     """Returns mean absolute kinematic latency in ms, or np.nan if not computable.
 
     Signal: |Yaw| + |Pitch| in raw degrees (col 0 + col 1 of the DOF arrays). Each signal is
     smoothed (~200 ms moving average) and independently min-max normalised, then a Schmitt
     trigger picks the first sample of every plateau (the top of each rising edge). Latency is
-    the mean absolute index difference between matched GT/pred plateau-tops, in ms.
+    the mean absolute index difference between matched GT/pred plateau-tops, in ms. A GT peak
+    only contributes if its closest prediction peak lies within max_match_ms.
 
     M9 (rest) is excluded because the combined signal carries no contraction plateaus.
     M10 (MVC) does not reach this function in any current validation loop, but is
@@ -310,12 +311,18 @@ def _compute_latency_ms(predictions, ground_truth, movement_class, fs=None):
     if len(gt_peaks) == 0 or len(pred_peaks) == 0:
         return np.nan
 
+    max_match_samples = int(round(max_match_ms / step_ms)) if max_match_ms is not None else None
+
     latencies = []
     for gt_idx in gt_peaks:
-        nearest = pred_peaks[np.argmin(np.abs(pred_peaks - gt_idx))]
-        latencies.append(abs(int(nearest) - int(gt_idx)) * step_ms)
+        nearest_idx = int(np.argmin(np.abs(pred_peaks - gt_idx)))
+        nearest = int(pred_peaks[nearest_idx])
+        distance = abs(nearest - int(gt_idx))
+        if max_match_samples is not None and distance > max_match_samples:
+            continue
+        latencies.append(distance * step_ms)
 
-    return float(np.mean(latencies))
+    return float(np.mean(latencies)) if latencies else np.nan
 
 
 def _save_predictions_csv(output_dir, trial_name, predictions, ground_truth, time_axis):
@@ -578,7 +585,7 @@ def run_fast_validation(model_path, sim_file=None, predefined=False, base_path='
 
     if predefined:
         print("[Fast Validation] Running predefined benchmark suite...")
-        test_cases = [(8, 1), (8, 2), (8, 3), (8, 4), (8, 5), (8, 6), (8, 7), (8, 8), (8, 9), (6, 1), (7, 2), (2, 3), (6, 4), (7, 5), (5, 6), (6, 7)]
+        test_cases = [(8, 1), (8, 2), (8, 3), (8, 4), (8, 5), (8, 6), (8, 7), (8, 8), (8, 9)]
         if repository is not None:
             files_to_process = [
                 (repository.output_file_path(

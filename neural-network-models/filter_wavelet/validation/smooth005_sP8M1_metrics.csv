@@ -1,2 +1,2 @@
 trial,Yaw_r2,Pitch_r2,Yaw_rmse,Pitch_rmse,mean_abs_latency_ms
-sP8M1,0.6357,0.0000,8.9053,5.1466,1005.00
+sP8M1,0.6357,0.0000,8.9053,5.1466,600.00

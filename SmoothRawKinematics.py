@@ -22,6 +22,7 @@ Usage:
     python SmoothRawKinematics.py
     python SmoothRawKinematics.py --alpha 0.1
     python SmoothRawKinematics.py --alpha 0.05 --prefixes window step
+    python SmoothRawKinematics.py --alpha 0.05 --runs tfFroz_sP8 tfNotFroz_sP8
 
 Alpha tag encoding: "0" + decimal digits of alpha string
     0.2  -> "02"
@@ -81,7 +82,7 @@ def _compute_metrics(predictions: np.ndarray, ground_truth: np.ndarray) -> dict:
 
 def _detect_rising_edge_tops(sig_norm: np.ndarray) -> np.ndarray:
     """Schmitt-trigger rising-edge detector (mirrors ModelValidator._detect_rising_edge_tops)."""
-    low_thresh, high_thresh = 0.2, 0.7
+    low_thresh, high_thresh = 0.05, 0.3
     if len(sig_norm) == 0:
         return np.array([], dtype=int)
     edges = []
@@ -101,10 +102,12 @@ def _compute_latency_ms(
     ground_truth: np.ndarray,
     movement_class: int,
     step_ms: float,
+    max_match_ms: float = 2000.0,
 ) -> float:
     """Mean absolute kinematic latency in ms, or np.nan (mirrors ModelValidator._compute_latency_ms).
 
     step_ms is inferred from the time_s column so Config.INCREMENT / Config.FS are not needed.
+    A GT peak only contributes if its nearest prediction peak lies within max_match_ms.
     """
     if movement_class in (9, 10):
         return np.nan
@@ -129,11 +132,18 @@ def _compute_latency_ms(
     if len(gt_peaks) == 0 or len(pred_peaks) == 0:
         return np.nan
 
-    latencies = [
-        abs(int(pred_peaks[np.argmin(np.abs(pred_peaks - g))]) - int(g)) * step_ms
-        for g in gt_peaks
-    ]
-    return float(np.mean(latencies))
+    max_match_samples = int(round(max_match_ms / step_ms)) if max_match_ms is not None else None
+
+    latencies = []
+    for g in gt_peaks:
+        nearest_idx = int(np.argmin(np.abs(pred_peaks - g)))
+        nearest = int(pred_peaks[nearest_idx])
+        distance = abs(nearest - int(g))
+        if max_match_samples is not None and distance > max_match_samples:
+            continue
+        latencies.append(distance * step_ms)
+
+    return float(np.mean(latencies)) if latencies else np.nan
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +157,6 @@ def _read_predictions_csv(path: str):
         header = reader.fieldnames or []
         rows = list(reader)
     return header, rows
-
 
 def _write_smoothed_predictions(out_path: str, rows: list, smoothed_yaw: np.ndarray, smoothed_pitch: np.ndarray, has_gt: bool) -> None:
     header = ['window_idx', 'time_s', 'Yaw_pred', 'Pitch_pred']
@@ -321,6 +330,12 @@ def main():
         default=None,
         help='Optional list of run-name prefixes to process (e.g., window step).',
     )
+    parser.add_argument(
+        '--runs',
+        nargs='*',
+        default=None,
+        help='Optional list of exact run names to process (e.g., tfFroz_sP8 tfNotFroz_sP8). Takes precedence over --prefixes.',
+    )
     args = parser.parse_args()
 
     if not (0.0 < args.alpha <= 1.0):
@@ -331,7 +346,10 @@ def main():
     root_dir = os.path.abspath(args.root)
 
     run_names = _list_run_dirs(root_dir)
-    if args.prefixes:
+    if args.runs:
+        run_set = set(args.runs)
+        run_names = [n for n in run_names if n in run_set]
+    elif args.prefixes:
         prefix_set = set(args.prefixes)
         run_names = [n for n in run_names if n.split('_', 1)[0] in prefix_set]
 

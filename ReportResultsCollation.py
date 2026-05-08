@@ -5,7 +5,8 @@ Reads ablation summary CSVs and writes benchmark-only data to a report-data
 folder for direct use in a LaTeX report.
 
 Only collected_benchmark and secondary_benchmark categories are extracted.
-Transfer-learning runs (prefix: tf) and movement-summary files are excluded.
+Transfer-learning runs (prefix: tf) are excluded. Movement summaries are included
+and written as separate benchmark CSVs.
 
 Outputs:
     <output_dir>/
@@ -94,8 +95,6 @@ def main():
 
     for filename in sorted(os.listdir(summary_dir)):
         if not filename.endswith('_summary.csv'):
-            continue
-        if '_movement_summary.csv' in filename:
             continue
 
         prefix = filename[: -len('_summary.csv')]

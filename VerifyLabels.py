@@ -1,8 +1,10 @@
-import scipy.io
 from pathlib import Path
+
+from FileRepository import DataRepository
 
 def verify_labelled_mat_files(base_dir="biosignal_data"):
     base_path = Path(base_dir)
+    repository = DataRepository(base_path=base_dir)
     
     if not base_path.exists():
         print(f"Error: Directory '{base_dir}' not found. Make sure you run this script from the correct location.")
@@ -21,7 +23,7 @@ def verify_labelled_mat_files(base_dir="biosignal_data"):
     for file_path in target_files:
         try:
             # Load the .mat file
-            mat_data = scipy.io.loadmat(file_path)
+            mat_data = repository.load_mat(str(file_path))
             
             # Extract keys, ignoring the internal MATLAB metadata keys (which start with '__')
             keys = [key for key in mat_data.keys() if not key.startswith('__')]

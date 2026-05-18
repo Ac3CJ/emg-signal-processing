@@ -14,16 +14,30 @@ NUM_OUTPUTS = 4             # Output DOFs: [Yaw, Pitch, Roll, Elbow]
 # ====================================================================================
 # 2. SLIDING WINDOW & REAL-TIME CONSTRAINTS
 # ====================================================================================
-WINDOW_SIZE = 100           # 100 ms window size
-INCREMENT = 20              # 20 ms step size
-SMOOTHING_ALPHA = 0.1       # Exponential moving average factor for kinematic output (0.0 to 1.0)
+# Original WINDOW_SIZE_MS = 500, INCREMENT = 62 (This is in milliseconds)
+# Multiplier factor 62/500 = 0.124
 
-# Optional training mode: slice windows dynamically from continuous EMG arrays.
-# If disabled, training uses pre-windowed tensors (legacy behavior).
+
+WINDOW_SIZE = 100           # GOOD: 100 ms window size
+INCREMENT = 15              # GOOD: 15 ms step size
+SMOOTHING_ALPHA = 0.1       # EMA factor — retained for reference. Not applied in validation or live controller; smoothing is Unity's responsibility.
+WARMUP_SECONDS = 0.5        # Skip emitting predictions until this much real data has streamed in (online + offline).
+
+# Controls the training windowing strategy.
+# True  → on-the-fly windowing via ContinuousEMGDataset (lower RAM, slower epochs).
+# False → pre-windowed path: all windows materialised into a (N, C, W) tensor before
+#         training begins (faster epochs, higher RAM — verify available RAM before enabling
+#         with large datasets; rule of thumb: N_windows × 8 channels × 100 samples × 4 bytes,
+#         e.g. 200k windows ≈ 640 MB, but full augmented datasets can reach several GB).
 ON_THE_FLY_WINDOW_SLICING = True
 ON_THE_FLY_WINDOW_SIZE = WINDOW_SIZE
 ON_THE_FLY_STEP_SIZE = INCREMENT
 ON_THE_FLY_ACTIVE_CHANNELS = None  # Example: [0, 1, 2, 3]
+
+# Shuffle order of full contraction/rest segments while preserving each segment's
+# internal temporal order. Seed=None keeps stochastic reshuffling every epoch.
+CONTRACTION_BLOCK_SHUFFLE = True
+CONTRACTION_BLOCK_SHUFFLE_SEED = None
 
 # ====================================================================================
 # 2b. VISUALIZATION SETTINGS
@@ -51,16 +65,18 @@ MIXUP_RATIO = 0.75           # Ratio of new mixup samples to generate (0.5 = dat
 TRAINING_NOISE_MAGNITUDES = [0.000005, 0.00001]
 
 REST_MIXUP_ALPHA = 0.2           # Alpha parameter for the Beta distribution (controls blend intensity)
-REST_MIXUP_RATIO = 0.1           # Ratio of new mixup samples to generate (0.5 = dataset increases by 50%)
+REST_MIXUP_RATIO = 0.5           # Ratio of new mixup samples to generate (0.5 = dataset increases by 50%)
+
+ENABLE_MAGNITUDE_WARPING = True  # Set False in ablation studies to isolate other augmentation effects
 
 # ====================================================================================
 # 5. NEURAL NETWORK TRAINING PARAMETERS
 # ====================================================================================
-EPOCHS = 150
-BATCH_SIZE = 256            # Reduced for 16GB RAM constraint (was 1280)
-GRADIENT_ACCUMULATION_STEPS = 2  # Accumulate 2 batches = effective batch of 1024 without RAM spike
+EPOCHS = 400
+BATCH_SIZE = 512            # Reduced for 16GB RAM constraint (was 1280)
+GRADIENT_ACCUMULATION_STEPS = 1  # Accumulate 2 batches = effective batch of 1024 without RAM spike
 NUM_DATA_WORKERS = 1        # Reduced for RAM (was 4)
-PATIENCE = 20              # Early stopping patience
+PATIENCE = 20               # Early stopping patience
 LEARNING_RATE = 0.001
 LR_SCHEDULER_FACTOR = 0.5  # Reduce LR by this factor when plateau detected
 LR_SCHEDULER_PATIENCE = 5  # Wait this many epochs before reducing LR
@@ -70,11 +86,11 @@ PREFETCH_FACTOR = 1         # Reduced for RAM (was 2)
 # ====================================================================================
 # 5b. TRANSFER LEARNING PARAMETERS
 # ====================================================================================
-TRANSFER_LEARNING_EPOCHS = 75       # Fewer epochs needed for fine-tuning
-TRANSFER_LEARNING_LEARNING_RATE = 0.0001  # Lower learning rate for fine-tuning
+TRANSFER_LEARNING_EPOCHS = 200       # Fewer epochs needed for fine-tuning
+TRANSFER_LEARNING_LEARNING_RATE = 0.00025  # Lower learning rate for fine-tuning
 TRANSFER_LEARNING_BATCH_SIZE = 128  # Smaller batch size for collected data
 TRANSFER_LEARNING_PATIENCE = 20     # Early stopping patience for transfer learning
-FREEZE_BACKBONE_LAYERS = True       # Freeze convolutional layers
+FREEZE_BACKBONE_LAYERS = False       # Freeze convolutional layers
 NUM_LAYERS_TO_UNFREEZE = 2          # Number of final layers to unfreeze for training
 TRANSFER_LEARNING_MODEL_SAVE_PATH = 'best_shoulder_rcnn_transfer.pth'
 
@@ -141,7 +157,7 @@ MOVEMENT_NAMES = {
     9: "Rest"
 }
 
-CORRUPTED_TRIALS = [
+SECONDARY_BLACKLIST = [
     (1, 1),  # P1, M1: Defective Pectoralis Major (Sternal)
     (5, 1),  # P5, M1: Defective Trapezius Ascendant
     (7, 1),  # P7, M1: Defective Latissimus Dorsi
@@ -153,14 +169,22 @@ CORRUPTED_TRIALS = [
     (6, 5),  # P6, M5: Defective Trapezius Ascendant
     (3, 6),  # P3, M6: FATAL - Flatline Trapezius Ascendant
     (4, 6),  # P4, M6: Noisy Serratus Anterior
-    (7, 6),  # P7, M6: FATAL - Flatline Trapezius Ascendant
-    (3, 7),  # P3, M7: FATAL - Flatline Trapezius Ascendant
-    (7, 7),  # P7, M7: FATAL - Flatline Trapezius Ascendant
-    (7, 8),  # P7, M8: FATAL - Flatline Trapezius Ascendant
+    #(7, 6),  # P7, M6: FATAL - Flatline Trapezius Ascendant
+    #(3, 7),  # P3, M7: FATAL - Flatline Trapezius Ascendant
+    #(7, 7),  # P7, M7: FATAL - Flatline Trapezius Ascendant
+    #(7, 8),  # P7, M8: FATAL - Flatline Trapezius Ascendant
+]
+
+COLLECTED_BLACKLIST = [
+    (6, 1),  # Completely Corrupted
+    # P5 — all trials corrupted (electrode misalignment across the session)
+    (5, 1), (5, 2), (5, 3), (5, 4), (5, 5), (5, 6), (5, 7), (5, 8), (5, 9),
+    # P8M4–P8M8 — electrodes drifted out of alignment mid-session
+    (8, 2), (8, 3), (8, 4), (8, 5), (8, 6), (8, 7), (8, 8),
 ]
 
 # New CORRUPTED TRIALS identified during validation (added 2024-06-15, much worse than before)
-# CORRUPTED_TRIALS = [
+# SECONDARY_BLACKLIST = [
 #     (1, 1),  # P1, M1: Defective Pectoralis Major (Sternal)
 #     (5, 1),  # P5, M1: Defective Trapezius Ascendant
 #     (7, 1),  # P7, M1: Defective Latissimus Dorsi

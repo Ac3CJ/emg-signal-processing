@@ -15,9 +15,11 @@ import scipy.io as spio
 import numpy as np
 from pathlib import Path
 import json
+from FileRepository import DataRepository
 
 # Configuration
-SOGGETTO_DIR = './biosignal_data/secondary/raw'
+REPOSITORY = DataRepository()
+SOGGETTO_DIR = REPOSITORY.raw_root('secondary')
 OUTPUT_REPORT = 'mat_file_structure_report.txt'
 
 
@@ -73,7 +75,7 @@ def safe_inspect_mat(file_path):
 
 def inspect_soggetto(soggetto_num):
     """Inspect all files within a single Soggetto directory."""
-    soggetto_path = os.path.join(SOGGETTO_DIR, f'Soggetto{soggetto_num}')
+    soggetto_path = REPOSITORY.secondary_subject_root(soggetto_num)
     
     if not os.path.exists(soggetto_path):
         print(f"[!] Directory not found: {soggetto_path}")
@@ -186,10 +188,10 @@ def compare_file_structures():
     print("CROSS-SUBJECT COMPARISON")
     print(f"{'='*100}")
     
-    subjects = range(1, 9)  # Soggetto1 through Soggetto8
+    subjects = REPOSITORY.discover_participants('secondary')
     
     for subject_num in subjects:
-        soggetto_path = os.path.join(SOGGETTO_DIR, f'Soggetto{subject_num}')
+        soggetto_path = REPOSITORY.secondary_subject_root(subject_num)
         if not os.path.exists(soggetto_path):
             continue
         

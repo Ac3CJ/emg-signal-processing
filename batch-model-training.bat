@@ -4,7 +4,7 @@ setlocal enabledelayedexpansion
 :: 1. Parse arguments
 set MODEL_NAME=
 set RUN_VALIDATE=0
-set COLLECTED_PARTICIPANTS=[]
+set COLLECTED_PARTICIPANTS=[1,3,4,6]
 
 :arg_loop
 if "%~1"=="" goto arg_done

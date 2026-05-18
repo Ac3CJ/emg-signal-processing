@@ -8,6 +8,11 @@ from scipy import ndimage
 from sklearn.decomposition import PCA
 import ControllerConfiguration as Config
 
+try:
+    import pywt as _pywt
+except ImportError:
+    _pywt = None
+
 # ===============================================================================
 # ================================ NORMALISATION ================================
 # ===============================================================================
@@ -250,13 +255,48 @@ def bandpassFilter(signal, fs=1000.0, lowCut=20.0, highCut=450.0, order=4):
     b, a = scipy.signal.butter(order, [low, high], btype='band')
     return scipy.signal.filtfilt(b, a, signal)
 
+def wavelet_denoise(signal, wavelet='sym4', level=10):
+    """Wavelet denoising: sym4, up to 10 levels, per-level universal threshold, Garrote shrinkage.
+
+    The requested level is capped at pywt.dwt_max_level(N, wavelet) to prevent
+    boundary-effect corruption at coarse scales (e.g. 4500-sample bursts → 9 levels max).
+
+    Noise sigma estimated from finest detail only (MAD estimator); per-level threshold
+    T_j = sigma * sqrt(2 * ln(N_j)) where N_j = coefficient count at level j.
+
+    Garrote shrinkage: f(x) = x - T^2/x  for |x| > T,  else 0.
+
+    Reference: Ouyang et al. 2023, EURASIP J. Advances in Signal Processing.
+    """
+    if _pywt is None:
+        raise ImportError("pywt (PyWavelets) is required for wavelet denoising. "
+                          "Install with: pip install PyWavelets")
+    sig = np.asarray(signal, dtype=np.float64)
+    actual_level = min(level, _pywt.dwt_max_level(len(sig), wavelet))
+    if actual_level < 1:
+        return sig.astype(np.float32)
+    coeffs = _pywt.wavedec(sig, wavelet, level=actual_level, mode='reflect')
+    finest = coeffs[-1]
+    sigma = np.median(np.abs(finest)) / 0.6745
+    if sigma < 1e-10:
+        return sig.astype(np.float32)
+    thresholded = [coeffs[0]]
+    for detail in coeffs[1:]:
+        n_j = max(len(detail), 2)
+        T = sigma * np.sqrt(2.0 * np.log(n_j))
+        d = np.where(np.abs(detail) > T, detail - (T * T) / detail, 0.0)
+        thresholded.append(d)
+    denoised = _pywt.waverec(thresholded, wavelet, mode='reflect')
+    return denoised[:len(sig)].astype(np.float32)
+
+
 def rectifySignal(signal):
     """
     Applies full-wave rectification to the signal.
-    
+
     Args:
         signal (np.ndarray): Input signal.
-        
+
     Returns:
         np.ndarray: Rectified signal (absolute values).
     """

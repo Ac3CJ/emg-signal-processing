@@ -9,6 +9,9 @@ from matplotlib.widgets import Button, CheckButtons
 import DataPreparation
 import SignalProcessing
 import ControllerConfiguration as Config
+from FileRepository import DataRepository, FileSelection
+
+REPOSITORY = DataRepository()
 
 # ====================================================================================
 # ============================== MODE 1: WINDOW VIEWER ===============================
@@ -137,11 +140,18 @@ class ParticipantOverlayViewer:
 
 def extract_representative_burst(p, m):
     """Hunts down the first TWO bursts of a specific trial, including the rest period between them."""
-    file_path = os.path.join(Config.BASE_DATA_PATH, f'Soggetto{p}', f'Movimento{m}.mat')
-    if not os.path.exists(file_path): return None
-    if (p, m) in Config.CORRUPTED_TRIALS: return None
-    
-    mat = scipy.io.loadmat(file_path)
+    if (p, m) in Config.SECONDARY_BLACKLIST: return None
+    file_path = REPOSITORY.raw_file_path(FileSelection(data_type="secondary", participant=p, movement=m))
+    if not os.path.exists(file_path):
+        print(f"Skipped Soggetto{p} Movimento{m}: file not found at {file_path}")
+        return None
+
+    try:
+        mat = scipy.io.loadmat(file_path)
+    except Exception as exc:
+        print(f"Skipped Soggetto{p} Movimento{m}: could not read {file_path} ({exc})")
+        return None
+
     raw_data = mat['EMGDATA']
     
     clean_data = np.zeros_like(raw_data)
@@ -180,18 +190,27 @@ def main():
 
     if args.mode == 'windows':
         print("Loading full dataset for Window Pagination Mode...")
-        X_full, y_full = DataPreparation.load_and_prepare_dataset(base_path=Config.BASE_DATA_PATH)
-        if len(X_full) == 0: return
-        reverse_mapping = {tuple(v): k for k, v in Config.TARGET_MAPPING.items()}
+        X_full, _y_full, segment_bounds, segment_classes = DataPreparation.load_and_prepare_dataset(
+            base_path=Config.BASE_DATA_PATH, augment=False, include_noise_aug=False,
+        )
+        if X_full is None or len(segment_bounds) == 0:
+            return
+
+        window_size = Config.WINDOW_SIZE
+        step_size = Config.INCREMENT
         grouped_windows = {m: [] for m in range(1, 10)}
-        for i in range(len(X_full)):
-            target_tuple = tuple(y_full[i])
-            if target_tuple in reverse_mapping:
-                movement_id = reverse_mapping[target_tuple]
-                grouped_windows[movement_id].append(X_full[i])
-                
+        for (seg_start, seg_end), cls in zip(segment_bounds, segment_classes):
+            if cls not in grouped_windows:
+                continue
+            seg_len = seg_end - seg_start
+            if seg_len < window_size:
+                continue
+            for offset in range(0, seg_len - window_size + 1, step_size):
+                w_start = seg_start + offset
+                grouped_windows[cls].append(X_full[:, w_start:w_start + window_size])
+
         for m in range(1, 10):
-            windows = np.array(grouped_windows[m])
+            windows = np.array(grouped_windows[m]) if grouped_windows[m] else np.empty((0,))
             if len(windows) > 0:
                 print(f"--- Opening Viewer for Movement {m} ---")
                 viewer = WindowViewer(movement_id=m, windows=windows, cols=5)

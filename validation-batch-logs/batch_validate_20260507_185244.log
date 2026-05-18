@@ -1,0 +1,76 @@
+Batch validation started: 20260507_185244
+============================================================
+
+[1/16] tfFroz_cP1  (arch=rcnn)
+  -> name: tfFroz_cP1
+  -> validate: False
+  -> validate_predefined: False
+  -> validate_benchmark: False
+  -> validate_all: True
+  -> collected: None
+  -> model: ./neural-network-models\tfFroz_cP1\training\best_shoulder_rcnn.pth
+  -> arch: rcnn
+  -> sim_file: ./secondary_data/Soggetto1/Movimento3.mat
+  -> plot: False
+  -> validation output dir: ./neural-network-models\tfFroz_cP1\validation
+
+[Validate All] Loading Model: ./neural-network-models\tfFroz_cP1\training\best_shoulder_rcnn.pth
+[Run Config] Loaded sidecar: model_type=rcnn, WINDOW_SIZE=100, INCREMENT=15
+
+[Validate All] Processing collected (87 candidate trials)...
+  -> Analyzing cP1M1...
+     Predictions saved: ./neural-network-models\tfFroz_cP1\validation\cP1M1_predictions.csv
+     R² — Yaw: 0.080  Pitch: 0.000
+  -> Analyzing cP1M2...
+     Predictions saved: ./neural-network-models\tfFroz_cP1\validation\cP1M2_predictions.csv
+     R² — Yaw: 0.830  Pitch: 0.000
+  -> Analyzing cP1M3...
+     Predictions saved: ./neural-network-models\tfFroz_cP1\validation\cP1M3_predictions.csv
+     R² — Yaw: 0.577  Pitch: 0.000
+  -> Analyzing cP1M4...
+     Predictions saved: ./neural-network-models\tfFroz_cP1\validation\cP1M4_predictions.csv
+     R² — Yaw: -0.772  Pitch: 0.000
+  -> Analyzing cP1M5...
+     Predictions saved: ./neural-network-models\tfFroz_cP1\validation\cP1M5_predictions.csv
+     R² — Yaw: 0.000  Pitch: 0.569
+  -> Analyzing cP1M6...
+Traceback (most recent call last):
+  File "C:\Users\conra\Documents\__University of Bath\_Year 4\_FYP\_Technical\python-signal-processing\ModelValidator.py", line 762, in <module>
+    run_all_validation(model_path=args.model, output_dir=validation_dir, plot=args.plot, model_name=args.name,
+  File "C:\Users\conra\Documents\__University of Bath\_Year 4\_FYP\_Technical\python-signal-processing\ModelValidator.py", line 694, in run_all_validation
+    predictions, time_axis = get_predictions_for_file(model, device, file_path, mat_data=mat_data)
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\Documents\__University of Bath\_Year 4\_FYP\_Technical\python-signal-processing\ModelValidator.py", line 444, in get_predictions_for_file
+    pred = model(window_tensor).cpu().numpy()[0]
+           ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\Documents\__University of Bath\_Year 4\_FYP\_Technical\python-signal-processing\NeuralNetworkModels.py", line 301, in forward
+    x = self.eca1(x)
+        ^^^^^^^^^^^^
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\Documents\__University of Bath\_Year 4\_FYP\_Technical\python-signal-processing\NeuralNetworkModels.py", line 196, in forward
+    y = self.conv(y)
+        ^^^^^^^^^^^^
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\conv.py", line 375, in forward
+    return self._conv_forward(input, self.weight, self.bias)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\conra\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\conv.py", line 370, in _conv_forward
+    return F.conv1d(
+           ^^^^^^^^^
+KeyboardInterrupt

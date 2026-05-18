@@ -8,8 +8,11 @@ import scipy.io as sio
 import numpy as np
 import os
 from pathlib import Path
+from FileRepository import DataRepository, FileSelection
 
-def load_trial_triplet_demo(base_path, soggetto_num, movimento_num, fs_emg=1000.0):
+REPOSITORY = DataRepository()
+
+def load_trial_triplet_demo(soggetto_num, movimento_num, fs_emg=1000.0):
     """
     Load EMG + kinematics + timing markers as unified triplet
     
@@ -17,23 +20,18 @@ def load_trial_triplet_demo(base_path, soggetto_num, movimento_num, fs_emg=1000.
         dict with keys: emg, kinematics, timing, fs_emg, fs_kinematics, n_repetitions
     """
     # Load EMG data (key is always 'EMGDATA')
-    emg_path = os.path.join(base_path, f'Movimento{movimento_num}.mat')
+    emg_path = REPOSITORY.raw_file_path(FileSelection(data_type='secondary', participant=soggetto_num, movement=movimento_num))
     data = sio.loadmat(emg_path)
     emg = data['EMGDATA'].astype(np.float64)  # (8, N_samples)
     
     # Load kinematics data (key is 'angolospalla')
-    kin_path = os.path.join(base_path, f'MovimentoAngS{movimento_num}.mat')
+    kin_path = REPOSITORY.secondary_kinematics_file_path(soggetto_num, movimento_num)
     data = sio.loadmat(kin_path)
     kinematics = data['angolospalla'].flatten().astype(np.float64)
     
     # Load timing markers (naming: Movimento 1-8 use InizioFineSteady[11-18], Movimento 9 uses InizioFineRest12)
-    if movimento_num == 9:
-        timing_path = os.path.join(base_path, f'InizioFineRest12.mat')
-        key_name = 'InizioFineRest12'
-    else:
-        timing_num = movimento_num + 10  # M1->11, M2->12, etc.
-        timing_path = os.path.join(base_path, f'InizioFineSteady{timing_num}.mat')
-        key_name = f'InizioFineSteady{timing_num}'
+    timing_path = REPOSITORY.secondary_timing_file_path(soggetto_num, movimento_num)
+    key_name = 'InizioFineRest12' if movimento_num == 9 else f'InizioFineSteady{movimento_num + 10}'
     
     data = sio.loadmat(timing_path)
     timing = data[key_name].astype(np.uint16)  # (2, N_reps)
@@ -108,14 +106,14 @@ def extract_repetition_windows_demo(trial_data, window_size_samples=500, step_si
 def main():
     """Run demonstrations"""
     
-    base_path = './biosignal_data/secondary/raw/Soggetto1'
+    base_path = REPOSITORY.secondary_subject_root(1)
     
     print("=" * 80)
     print("TEST 1: Loading Trial Triplet (EMG + Kinematics + Timing)")
     print("=" * 80)
     
     try:
-        trial = load_trial_triplet_demo(base_path, soggetto_num=1, movimento_num=1)
+        trial = load_trial_triplet_demo(soggetto_num=1, movimento_num=1)
         
         print(f"✓ Trial loaded successfully")
         print(f"  - EMG shape: {trial['emg'].shape} @ {trial['fs_emg']} Hz")
@@ -128,6 +126,9 @@ def main():
     except FileNotFoundError as e:
         print(f"✗ Error: {e}")
         print(f"  Expected path: {base_path}")
+        return
+    except Exception as e:
+        print(f"✗ Unexpected error: {type(e).__name__}: {e}")
         return
     
     print("\n" + "=" * 80)
@@ -154,7 +155,7 @@ def main():
     movements_to_test = [1, 2, 5]
     for mov in movements_to_test:
         try:
-            trial = load_trial_triplet_demo(base_path, soggetto_num=1, movimento_num=mov)
+            trial = load_trial_triplet_demo(soggetto_num=1, movimento_num=mov)
             windows = extract_repetition_windows_demo(trial)
             
             targets = np.array([w['kinematics_target'] for w in windows])

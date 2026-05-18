@@ -8,6 +8,9 @@ import argparse
 
 import SignalProcessing
 import ControllerConfiguration as Config
+from FileRepository import DataRepository, FileSelection
+
+REPOSITORY = DataRepository()
 
 # ====================================================================================
 # ================================ MINMAX HELPERS ===================================
@@ -34,11 +37,7 @@ def _get_labelled_path_for_secondary(raw_path):
     Example: ./secondary_data/raw/Soggetto1/Movimento1.mat
           -> ./secondary_data/edited/Soggetto1/Movimento1_labelled.mat
     """
-    norm_path = raw_path.replace('\\', '/')
-    norm_path = norm_path.replace('/raw/', '/edited/')
-    if norm_path.endswith('.mat'):
-        norm_path = norm_path[:-4] + '_labelled.mat'
-    return norm_path
+    return REPOSITORY.labelled_candidate_path(raw_path)
 
 
 def _resolve_robust_minmax_for_file(file_path):
@@ -54,9 +53,8 @@ def _resolve_robust_minmax_for_file(file_path):
     except Exception:
         pass
 
-    # Try to find labelled variant
-    if 'secondary' in file_path.replace('\\', '/'):
-        labelled_path = _get_labelled_path_for_secondary(file_path)
+    labelled_path = REPOSITORY.labelled_candidate_path(file_path)
+    if os.path.normpath(labelled_path) != os.path.normpath(file_path):
         try:
             labelled_mat = scipy.io.loadmat(labelled_path)
             return _extract_robust_minmax(labelled_mat)
@@ -447,7 +445,7 @@ if __name__ == "__main__":
             file_name = file_location + f'Movimento{args.m}.mat'
         else:  # collected
             # Collected data format: ./collected_data/edited/P{p}M{m}_labelled.mat
-            file_name = Config.COLLECTED_DATA_PATH + f'P{args.p}M{args.m}_labelled.mat'
+            file_name = REPOSITORY.output_file_path(FileSelection(data_type='collected', participant=args.p, movement=args.m), create_dirs=False)
         
         # Load and display
         print(f"Loading {args.mode} data: {file_name}")

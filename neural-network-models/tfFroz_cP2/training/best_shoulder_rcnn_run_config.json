@@ -1,0 +1,7 @@
+{
+  "model_type": "rcnn",
+  "WINDOW_SIZE": 100,
+  "INCREMENT": 15,
+  "NUM_CHANNELS": 8,
+  "NUM_OUTPUTS": 4
+}

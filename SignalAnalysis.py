@@ -9,6 +9,7 @@ from PIL import Image
 
 import SignalProcessing
 import ControllerConfiguration as Config
+from FileRepository import DataRepository
 
 # Sampling rate from Rivela et al. (1.0 kHz)
 FS = 1000.0 
@@ -23,6 +24,19 @@ CHANNEL_MAP = {
     6: "Infraspinatus",
     7: "Latissimus Dorsi"
 }
+
+def _normalise_participant_ids(participant_ids):
+    if participant_ids is None:
+        return None
+
+    normalised = set()
+    for participant_id in participant_ids:
+        try:
+            normalised.add(int(participant_id))
+        except (TypeError, ValueError):
+            continue
+
+    return sorted(normalised)
 
 # ====================================================================================
 # ============================== BATCH IMAGE GENERATION ==============================
@@ -101,7 +115,7 @@ def _generate_channel_image(raw_signal, participant_id, movement_id, channel_id,
     plt.close(fig)  # CRITICAL: Frees up memory so the script doesn't crash
 
 
-def generate_all_signal_images(base_data_path=None, save_path=None, data_structure='secondary'):
+def generate_all_signal_images(base_data_path=None, save_path=None, data_structure='secondary', participant_ids=None):
     """
     Generates individual channel images for all participants and movements.
     Unified for both secondary (Soggetto{p} structure) and collected (PM{x} flat) data.
@@ -110,6 +124,7 @@ def generate_all_signal_images(base_data_path=None, save_path=None, data_structu
         base_data_path (str): Path to dataset directory
         save_path (str): Path to save generated PNGs
         data_structure (str): 'secondary' (Soggetto nested) or 'collected' (flat PM)
+        participant_ids (list[int] | None): Optional collected participant IDs to process.
     
     Processing matches DataPreparation.py:
     - Notch filter (50 Hz powerline)
@@ -138,75 +153,113 @@ def generate_all_signal_images(base_data_path=None, save_path=None, data_structu
     print(f"  Notch: {Config.NOTCH_FREQ} Hz")
     print(f"  Bandpass: {Config.BANDPASS_LOW}-{Config.BANDPASS_HIGH} Hz")
     print(f"  TKEO lowpass cutoff: 5.0 Hz\n")
+
+    repository = DataRepository.from_standard_path(base_data_path)
     
     if data_structure == 'secondary':
         # Secondary: Nested Soggetto{p} structure, 8 participants × 9 movements
-        for p in range(1, 9):
-            for m in range(1, 10):
-                file_name = os.path.join(base_data_path, f'Soggetto{p}', f'Movimento{m}_labelled.mat')
-                
+        if repository is not None:
+            trial_selections = repository.iter_file_selections('secondary')
+            for selection in trial_selections:
+                file_name = repository.output_file_path(selection, create_dirs=False)
+
                 if not os.path.exists(file_name):
                     print(f"[-] Skipping missing file: {file_name}")
                     continue
-                    
+
                 try:
                     mat_contents = scipy.io.loadmat(file_name)
                     if 'EMGDATA' not in mat_contents:
                         print(f"[-] No EMGDATA in {file_name}")
                         continue
-                        
+
                     raw_data = mat_contents['EMGDATA']
                     num_channels, num_samples = raw_data.shape
                     time_axis = np.arange(num_samples) / FS
-                    
-                    # Generate image for each channel
+
                     for c in range(num_channels):
                         raw_signal = raw_data[c, :]
-                        _generate_channel_image(raw_signal, p, m, c, save_path, time_axis)
-                        
+                        _generate_channel_image(raw_signal, selection.participant, selection.movement, c, save_path, time_axis)
+
                 except Exception as e:
-                    print(f"[!] Error processing Participant {p}, Movement {m}: {e}")
+                    print(f"[!] Error processing Participant {selection.participant}, Movement {selection.movement}: {e}")
+        else:
+            for p in range(1, 9):
+                for m in range(1, 10):
+                    file_name = os.path.join(base_data_path, f'Soggetto{p}', f'Movimento{m}_labelled.mat')
+
+                    if not os.path.exists(file_name):
+                        print(f"[-] Skipping missing file: {file_name}")
+                        continue
+
+                    try:
+                        mat_contents = scipy.io.loadmat(file_name)
+                        if 'EMGDATA' not in mat_contents:
+                            print(f"[-] No EMGDATA in {file_name}")
+                            continue
+
+                        raw_data = mat_contents['EMGDATA']
+                        num_channels, num_samples = raw_data.shape
+                        time_axis = np.arange(num_samples) / FS
+
+                        for c in range(num_channels):
+                            raw_signal = raw_data[c, :]
+                            _generate_channel_image(raw_signal, p, m, c, save_path, time_axis)
+
+                    except Exception as e:
+                        print(f"[!] Error processing Participant {p}, Movement {m}: {e}")
     
     elif data_structure == 'collected':
         # Collected: Flat PM{x} structure, variable participants × 9 movements
-        # Find all participant numbers by scanning directory
-        participants = set()
-        for filename in os.listdir(base_data_path):
-            if filename.startswith('P') and filename.endswith('_labelled.mat'):
-                # Extract participant number from P{x}M{y}_labelled.mat
-                try:
-                    pid_str = filename.split('M')[0].replace('P', '')
-                    pid = int(pid_str)
-                    participants.add(pid)
-                except:
-                    pass
-        
-        participants = sorted(participants)
-        print(f"[INFO] Found collected participants: {participants}\n")
-        
-        for p in participants:
-            for m in range(1, 10):
-                file_name = os.path.join(base_data_path, f'P{p}M{m}_labelled.mat')
-                
-                if not os.path.exists(file_name):
-                    continue  # Skip missing movements
-                    
-                try:
-                    mat_contents = scipy.io.loadmat(file_name)
-                    if 'EMGDATA' not in mat_contents:
-                        continue
-                        
-                    raw_data = mat_contents['EMGDATA']
-                    num_channels, num_samples = raw_data.shape
-                    time_axis = np.arange(num_samples) / FS
-                    
-                    # Generate image for each channel
-                    for c in range(num_channels):
-                        raw_signal = raw_data[c, :]
-                        _generate_channel_image(raw_signal, p, m, c, save_path, time_axis)
-                        
-                except Exception as e:
-                    print(f"[!] Error processing Participant {p}, Movement {m}: {e}")
+        if repository is None:
+            repository = DataRepository()
+
+        available_participants = repository.discover_participants('collected')
+
+        participants = _normalise_participant_ids(participant_ids)
+
+        if participants is None:
+            participants = available_participants
+            print(f"[INFO] Found collected participants: {participants}\n")
+        else:
+            print(f"[INFO] Collected participant filter enabled: {participants}")
+            print(f"[INFO] Available collected participants: {available_participants}\n")
+
+        skipped_trials = []
+
+        if len(participants) == 0:
+            print("[WARNING] No collected participants were available to process.")
+            print("Batch generation complete! All images saved.")
+            return
+
+        for selection in repository.iter_file_selections('collected', participants):
+            file_name = repository.output_file_path(selection, create_dirs=False)
+
+            if not os.path.exists(file_name):
+                skipped_trials.append((selection.participant, selection.movement, 'missing file'))
+                continue
+
+            try:
+                mat_contents = scipy.io.loadmat(file_name)
+                if 'EMGDATA' not in mat_contents:
+                    skipped_trials.append((selection.participant, selection.movement, 'missing EMGDATA'))
+                    continue
+
+                raw_data = mat_contents['EMGDATA']
+                num_channels, num_samples = raw_data.shape
+                time_axis = np.arange(num_samples) / FS
+
+                for c in range(num_channels):
+                    raw_signal = raw_data[c, :]
+                    _generate_channel_image(raw_signal, selection.participant, selection.movement, c, save_path, time_axis)
+
+            except Exception as e:
+                skipped_trials.append((selection.participant, selection.movement, f'corrupted or unreadable ({e})'))
+
+        if skipped_trials:
+            print("\n[SKIP LOG] Collected trials skipped:")
+            for p, m, reason in skipped_trials:
+                print(f"  - P{p}M{m}: {reason}")
     
     print("Batch generation complete! All images saved.")
 
@@ -492,12 +545,13 @@ def generate_movement_waveform_grids(source_dir=None, save_dir=None, scale_facto
     print("[GRID] Movement waveform grids complete!")
 
 
-def generate_all_images_and_grids(data_type='secondary'):
+def generate_all_images_and_grids(data_type='secondary', participant_ids=None):
     """
     Master function that generates all signal images and waveform grids in one workflow.
     
     Args:
         data_type (str): 'secondary', 'collected', or 'all'
+        participant_ids (list[int] | None): Optional collected participant IDs to process.
     """
     data_configs = {
         'secondary': {
@@ -532,7 +586,8 @@ def generate_all_images_and_grids(data_type='secondary'):
         generate_all_signal_images(
             base_data_path=config['base_path'],
             save_path=config['signal_plots_dir'],
-            data_structure=dataset
+            data_structure=dataset,
+            participant_ids=participant_ids
         )
         
         # Step 2: Generate participant waveform grids (8x9)
@@ -571,9 +626,11 @@ if __name__ == "__main__":
 Examples:
   python SignalAnalysis.py --mode signal                    # Generate secondary data signal images
   python SignalAnalysis.py --mode participant               # Generate collected data signal images
+    python SignalAnalysis.py --mode participant --pid 1 3 6  # Generate collected data for specific participants
   python SignalAnalysis.py --mode grids                     # Generate all grids (comprehensive workflow)
   python SignalAnalysis.py --mode grids --dataset secondary # Generate grids for secondary data only
   python SignalAnalysis.py --mode grids --dataset collected # Generate grids for collected data only
+    python SignalAnalysis.py --mode grids --dataset collected --pid 1 3 6 # Generate collected grids using selected participants
   python SignalAnalysis.py --mode ensemble                  # Generate ensemble medians
   python SignalAnalysis.py --mode all                       # Run all modes (default)
         """
@@ -593,6 +650,14 @@ Examples:
         choices=['secondary', 'collected', 'all'],
         default='all',
         help='Dataset to process for grids mode (default: all)'
+    )
+
+    parser.add_argument(
+        '--pid',
+        type=int,
+        nargs='+',
+        default=None,
+        help='Collected participant IDs to process (e.g. --pid 1 3 6). If omitted, all detected participants are used.'
     )
     
     args = parser.parse_args()
@@ -622,12 +687,12 @@ Examples:
     
     if 'participant' in modes_to_run:
         print("Generating collected data signal images...")
-        generate_all_signal_images(base_data_path=Config.COLLECTED_DATA_PATH, save_path='./signal_plots/collected', data_structure='collected')
+        generate_all_signal_images(base_data_path=Config.COLLECTED_DATA_PATH, save_path='./signal_plots/collected', data_structure='collected', participant_ids=args.pid)
         print()
     
     if 'grids' in modes_to_run:
         print("Generating comprehensive waveform grids (images + grids)...")
-        generate_all_images_and_grids(data_type=args.dataset)
+        generate_all_images_and_grids(data_type=args.dataset, participant_ids=args.pid)
         print()
     
     print("\n" + "=" * 80)
